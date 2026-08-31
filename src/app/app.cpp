@@ -169,6 +169,9 @@ bool AppImpl::pollEvents() {
 Frame AppImpl::beginFrame(const FrameConfig& config) {
     current = frames->begin();
     framePresented = false;
+    const VkExtent2D extent = swapchain->extent();
+    canvasData.reset(
+        {static_cast<float>(extent.width), static_cast<float>(extent.height)});
 
     if (current.ok) {
         const Color c = config.clear;
@@ -208,6 +211,7 @@ void AppImpl::present() {
     framePresented = true;
 
     if (current.ok) {
+        renderer2d->flush(current.cmd, frames->slot(), canvasData, *frames);
         vkCmdEndRendering(current.cmd);
         gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -235,6 +239,8 @@ void Frame::present() {
         app_ = nullptr;
     }
 }
+
+Canvas Frame::canvas() { return app_->canvas(); }
 
 // --------------------------------------------------------------------- App
 
@@ -272,6 +278,12 @@ Result<App> App::create(const AppConfig& config) {
 
     impl->swapchain = std::make_unique<gpu::Swapchain>(*impl->gpu, surface, config.vsync);
     impl->frames = std::make_unique<gpu::FrameRing>(*impl->gpu, *impl->swapchain);
+    impl->bindless = std::make_unique<gpu::BindlessTable>(*impl->gpu);
+    impl->uploader = std::make_unique<gpu::Uploader>(*impl->gpu);
+    impl->textures =
+        std::make_unique<gpu::TexturePool>(*impl->gpu, *impl->bindless, *impl->uploader);
+    impl->renderer2d = std::make_unique<detail::Renderer2D>(*impl->gpu, *impl->bindless,
+                                                            impl->swapchain->format());
 
     impl->startTick = impl->lastTick = SDL_GetTicksNS();
     SDL_StartTextInput(impl->window);
@@ -285,6 +297,20 @@ App& App::operator=(App&&) noexcept = default;
 App::~App() = default;
 
 bool App::pollEvents() { return impl_->pollEvents(); }
+
+Result<TextureRef> App::loadTexture(const std::string& path, const TextureOptions& options) {
+    return impl_->textures->loadFromFile(path, options);
+}
+
+Result<TextureRef> App::createTexture(const void* rgbaPixels, IVec2 size,
+                                      const TextureOptions& options) {
+    return impl_->textures->createFromPixels(rgbaPixels, size, options);
+}
+
+void App::destroyTexture(TextureRef texture) {
+    gpu::TexturePool* pool = impl_->textures.get();
+    impl_->frames->defer([pool, texture] { pool->destroy(texture); });
+}
 void App::quit() { impl_->quitRequested = true; }
 Frame App::beginFrame(const FrameConfig& config) { return impl_->beginFrame(config); }
 const Input& App::input() const { return impl_->input; }

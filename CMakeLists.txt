@@ -15,6 +15,7 @@ set(RENDY_SANITIZE "" CACHE STRING "Semicolon list of sanitizers, e.g. address;u
 
 include(cmake/Warnings.cmake)
 include(cmake/Dependencies.cmake)
+include(cmake/CompileShaders.cmake)
 
 # ------------------------------------------------------------------ library
 add_library(rendy STATIC
@@ -23,7 +24,18 @@ add_library(rendy STATIC
   src/gpu/context.cpp
   src/gpu/swapchain.cpp
   src/gpu/frame.cpp
+  src/gpu/bindless.cpp
+  src/gpu/upload.cpp
+  src/gpu/texture.cpp
   src/gpu/vma_impl.cpp
+  src/gpu/stb_impl.cpp
+  src/canvas/canvas.cpp
+  src/canvas/renderer2d.cpp
+)
+
+rendy_compile_shaders(rendy
+  shaders/quad2d.vert
+  shaders/quad2d.frag
 )
 add_library(rendy::rendy ALIAS rendy)
 
@@ -42,7 +54,8 @@ target_link_libraries(rendy
     rendy::warnings
     SDL3::SDL3
     volk::volk
-    GPUOpen::VulkanMemoryAllocator)
+    GPUOpen::VulkanMemoryAllocator
+    stb::stb)
 
 target_compile_features(rendy PUBLIC cxx_std_20)
 

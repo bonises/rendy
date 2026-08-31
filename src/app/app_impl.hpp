@@ -2,10 +2,16 @@
 
 // The private App state shared between app.cpp and (later) Canvas/Scene glue.
 
+#include "canvas/canvas_data.hpp"
+#include "canvas/renderer2d.hpp"
+#include "gpu/bindless.hpp"
 #include "gpu/context.hpp"
 #include "gpu/frame.hpp"
 #include "gpu/swapchain.hpp"
+#include "gpu/texture.hpp"
+#include "gpu/upload.hpp"
 #include "rendy/app/app.hpp"
+#include "rendy/canvas/canvas.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -18,6 +24,11 @@ struct AppImpl {
     std::unique_ptr<gpu::Context> gpu;
     std::unique_ptr<gpu::Swapchain> swapchain;
     std::unique_ptr<gpu::FrameRing> frames;
+    std::unique_ptr<gpu::BindlessTable> bindless;
+    std::unique_ptr<gpu::Uploader> uploader;
+    std::unique_ptr<gpu::TexturePool> textures;
+    std::unique_ptr<Renderer2D> renderer2d;
+    CanvasData canvasData;
 
     Input input;
     bool quitRequested = false;
@@ -36,6 +47,7 @@ struct AppImpl {
     bool pollEvents();
     Frame beginFrame(const FrameConfig& config);
     void present();
+    Canvas canvas() { return Canvas(&canvasData); }
 };
 
 } // namespace rendy::detail

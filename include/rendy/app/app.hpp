@@ -11,8 +11,10 @@
 ///         frame.present();
 ///     }
 
+#include "../canvas/canvas.hpp"
 #include "../core/color.hpp"
 #include "../core/result.hpp"
+#include "../gpu/texture.hpp"
 #include "../math/math.hpp"
 #include "input.hpp"
 
@@ -50,6 +52,9 @@ public:
     /// Submit and present this frame. Idempotent.
     void present();
 
+    /// The 2D drawing surface for this frame.
+    [[nodiscard]] Canvas canvas();
+
 private:
     friend struct detail::AppImpl;
     explicit Frame(detail::AppImpl* app) : app_(app) {}
@@ -73,6 +78,14 @@ public:
     void quit();
 
     Frame beginFrame(const FrameConfig& config = {});
+
+    /// Load an image file (PNG/JPEG/BMP/TGA/HDR...) into a GPU texture.
+    Result<TextureRef> loadTexture(const std::string& path, const TextureOptions& options = {});
+    /// Create a texture from tightly packed RGBA8 pixels.
+    Result<TextureRef> createTexture(const void* rgbaPixels, IVec2 size,
+                                     const TextureOptions& options = {});
+    /// Destroy a texture. Safe while frames using it are still in flight.
+    void destroyTexture(TextureRef texture);
 
     [[nodiscard]] const Input& input() const;
     /// Framebuffer size in pixels (drawing coordinate space).
