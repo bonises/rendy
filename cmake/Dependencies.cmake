@@ -106,9 +106,13 @@ FetchContent_Declare(dr_libs
   GIT_TAG dfe8377631000664666519fdb83da193fd8037f4
   SYSTEM EXCLUDE_FROM_ALL)
 
+# volk needs to be pointed at the fetched Vulkan headers (no SDK installed).
+FetchContent_MakeAvailable(VulkanHeaders)
+set(VULKAN_HEADERS_INSTALL_DIR "${vulkanheaders_SOURCE_DIR}" CACHE PATH "" FORCE)
+
 FetchContent_MakeAvailable(
   fmt glm Catch2 SDL3
-  VulkanHeaders volk VulkanMemoryAllocator glslang
+  volk VulkanMemoryAllocator glslang
   freetype yoga fastgltf stb dr_libs)
 
 # Header-only interface targets for the buildless deps.

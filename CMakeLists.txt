@@ -19,6 +19,11 @@ include(cmake/Dependencies.cmake)
 # ------------------------------------------------------------------ library
 add_library(rendy STATIC
   src/core/log.cpp
+  src/app/app.cpp
+  src/gpu/context.cpp
+  src/gpu/swapchain.cpp
+  src/gpu/frame.cpp
+  src/gpu/vma_impl.cpp
 )
 add_library(rendy::rendy ALIAS rendy)
 
@@ -26,9 +31,18 @@ target_include_directories(rendy PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_include_directories(rendy PRIVATE src)
 
+target_compile_definitions(rendy PRIVATE VK_NO_PROTOTYPES)
+if(RENDY_VULKAN_VALIDATION)
+  target_compile_definitions(rendy PRIVATE RENDY_ENABLE_VALIDATION)
+endif()
+
 target_link_libraries(rendy
   PUBLIC fmt::fmt glm::glm
-  PRIVATE rendy::warnings)
+  PRIVATE
+    rendy::warnings
+    SDL3::SDL3
+    volk::volk
+    GPUOpen::VulkanMemoryAllocator)
 
 target_compile_features(rendy PUBLIC cxx_std_20)
 
