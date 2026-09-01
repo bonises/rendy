@@ -8,3 +8,4 @@ function(rendy_example name)
 endfunction()
 
 rendy_example(01_hello)
+rendy_example(03_text_editor_lite)

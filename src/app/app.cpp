@@ -86,6 +86,14 @@ int mapMouseButton(Uint8 button) {
 } // namespace
 
 AppImpl::~AppImpl() {
+    // Tear down strictly in reverse creation order; everything owning GPU
+    // resources must die before the allocator/device in `gpu`.
+    if (gpu) gpu->waitIdle();
+    renderer2d.reset();
+    glyphs.reset();
+    textures.reset();
+    uploader.reset();
+    bindless.reset();
     frames.reset();
     swapchain.reset();
     gpu.reset();
@@ -211,6 +219,7 @@ void AppImpl::present() {
     framePresented = true;
 
     if (current.ok) {
+        glyphs->flushUploads();
         renderer2d->flush(current.cmd, frames->slot(), canvasData, *frames);
         vkCmdEndRendering(current.cmd);
         gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
@@ -282,6 +291,9 @@ Result<App> App::create(const AppConfig& config) {
     impl->uploader = std::make_unique<gpu::Uploader>(*impl->gpu);
     impl->textures =
         std::make_unique<gpu::TexturePool>(*impl->gpu, *impl->bindless, *impl->uploader);
+    impl->glyphs = std::make_unique<text::GlyphCache>(*impl->textures);
+    impl->glyphs->loadDefaultFonts();
+    impl->canvasData.glyphCache = impl->glyphs.get();
     impl->renderer2d = std::make_unique<detail::Renderer2D>(*impl->gpu, *impl->bindless,
                                                             impl->swapchain->format());
 
@@ -306,6 +318,12 @@ Result<TextureRef> App::createTexture(const void* rgbaPixels, IVec2 size,
                                       const TextureOptions& options) {
     return impl_->textures->createFromPixels(rgbaPixels, size, options);
 }
+
+Result<FontRef> App::loadFont(const std::string& path) {
+    return impl_->glyphs->loadFont(path);
+}
+
+FontRef App::defaultFont() const { return FontRef{0}; }
 
 void App::destroyTexture(TextureRef texture) {
     gpu::TexturePool* pool = impl_->textures.get();

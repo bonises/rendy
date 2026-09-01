@@ -87,6 +87,11 @@ public:
     /// Destroy a texture. Safe while frames using it are still in flight.
     void destroyTexture(TextureRef texture);
 
+    /// Load a .ttf/.otf font.
+    Result<FontRef> loadFont(const std::string& path);
+    /// The system sans-serif found at startup (id 0).
+    [[nodiscard]] FontRef defaultFont() const;
+
     [[nodiscard]] const Input& input() const;
     /// Framebuffer size in pixels (drawing coordinate space).
     [[nodiscard]] IVec2 pixelSize() const;

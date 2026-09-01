@@ -1,6 +1,11 @@
 #include "rendy/canvas/canvas.hpp"
 
 #include "canvas/canvas_data.hpp"
+#include "text/glyph_cache.hpp"
+#include "text/utf8.hpp"
+
+#include <algorithm>
+#include <cmath>
 
 namespace rendy {
 
@@ -34,6 +39,76 @@ void Canvas::drawImage(TextureRef texture, const Rect& rect, const DrawImageOpti
     quad.info = {0.0f, static_cast<float>(texture.index),
                  static_cast<float>(data_->currentClip()), detail::kQuadKindImage};
     data_->quads.push_back(quad);
+}
+
+namespace {
+
+// Shared walk for drawText/measureText: greedy shaping with kerning.
+template <typename PerGlyph>
+Vec2 layoutText(text::GlyphCache& cache, std::string_view str, Vec2 pos, FontRef font,
+                float size, PerGlyph&& perGlyph) {
+    const TextMetrics metrics = cache.metrics(font.id, size);
+    float x = std::round(pos.x);
+    float baseline = std::round(pos.y + metrics.ascent);
+    float maxX = x;
+    size_t offset = 0;
+    uint32_t prevGlyph = 0;
+    int lines = 1;
+    while (offset < str.size()) {
+        const uint32_t codepoint = text::decodeUtf8(str, offset);
+        if (codepoint == '\n') {
+            maxX = std::max(maxX, x);
+            x = std::round(pos.x);
+            baseline += metrics.lineHeight;
+            prevGlyph = 0;
+            lines++;
+            continue;
+        }
+        const text::GlyphInfo* glyph = cache.glyph(font.id, size, codepoint);
+        if (glyph == nullptr) continue;
+        x += cache.kerning(font.id, size, prevGlyph, glyph->ftGlyphIndex);
+        perGlyph(*glyph, x, baseline);
+        x += glyph->advance;
+        prevGlyph = glyph->ftGlyphIndex;
+    }
+    maxX = std::max(maxX, x);
+    return {maxX - std::round(pos.x), static_cast<float>(lines) * metrics.lineHeight};
+}
+
+} // namespace
+
+Vec2 Canvas::drawText(std::string_view str, Vec2 pos, const DrawTextOptions& options) {
+    text::GlyphCache* cache = data_->glyphCache;
+    if (cache == nullptr || !cache->hasFont(options.font.id)) return {0.0f, 0.0f};
+    const Vec4 color{options.color.r, options.color.g, options.color.b, options.color.a};
+    const float clip = static_cast<float>(data_->currentClip());
+    return layoutText(*cache, str, pos, options.font, options.size,
+                      [&](const text::GlyphInfo& g, float x, float baseline) {
+                          if (!g.hasPixels) return;
+                          Quad2D quad{};
+                          quad.rect = {std::round(x + g.bearing.x), std::round(baseline - g.bearing.y),
+                                       g.size.x, g.size.y};
+                          quad.uvRect = {g.uvMin.x, g.uvMin.y, g.uvMax.x, g.uvMax.y};
+                          quad.color = color;
+                          quad.radii = Vec4{0.0f};
+                          quad.borderColor = Vec4{0.0f};
+                          quad.info = {0.0f, static_cast<float>(g.textureIndex), clip,
+                                       detail::kQuadKindText};
+                          data_->quads.push_back(quad);
+                      });
+}
+
+Vec2 Canvas::measureText(std::string_view str, const DrawTextOptions& options) {
+    text::GlyphCache* cache = data_->glyphCache;
+    if (cache == nullptr || !cache->hasFont(options.font.id)) return {0.0f, 0.0f};
+    return layoutText(*cache, str, {0.0f, 0.0f}, options.font, options.size,
+                      [](const text::GlyphInfo&, float, float) {});
+}
+
+TextMetrics Canvas::textMetrics(const DrawTextOptions& options) {
+    text::GlyphCache* cache = data_->glyphCache;
+    if (cache == nullptr || !cache->hasFont(options.font.id)) return {};
+    return cache->metrics(options.font.id, options.size);
 }
 
 void Canvas::pushClip(const Rect& rect) {

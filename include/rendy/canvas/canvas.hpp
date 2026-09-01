@@ -9,6 +9,9 @@
 #include "../core/rect.hpp"
 #include "../gpu/texture.hpp"
 #include "../math/math.hpp"
+#include "font.hpp"
+
+#include <string_view>
 
 namespace rendy {
 
@@ -34,10 +37,24 @@ struct DrawImageOptions {
     float cornerRadius = 0.0f;
 };
 
+struct DrawTextOptions {
+    FontRef font{}; ///< default: the app's default UI font
+    float size = 16.0f;
+    Color color = colors::white;
+};
+
 class Canvas {
 public:
     void drawRect(const Rect& rect, const DrawRectOptions& options = {});
     void drawImage(TextureRef texture, const Rect& rect, const DrawImageOptions& options = {});
+
+    /// Draws UTF-8 text with `pos` as the top-left of the first line
+    /// ('\n' starts a new line). Returns the drawn size in px.
+    Vec2 drawText(std::string_view text, Vec2 pos, const DrawTextOptions& options = {});
+    /// Size drawText would occupy, without drawing.
+    Vec2 measureText(std::string_view text, const DrawTextOptions& options = {});
+    /// Vertical metrics for a font at a size (ascent/descent/lineHeight).
+    TextMetrics textMetrics(const DrawTextOptions& options = {});
 
     /// Clip subsequent draws to `rect` (intersected with the current clip).
     void pushClip(const Rect& rect);

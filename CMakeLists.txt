@@ -31,6 +31,7 @@ add_library(rendy STATIC
   src/gpu/stb_impl.cpp
   src/canvas/canvas.cpp
   src/canvas/renderer2d.cpp
+  src/text/glyph_cache.cpp
 )
 
 rendy_compile_shaders(rendy
@@ -55,7 +56,8 @@ target_link_libraries(rendy
     SDL3::SDL3
     volk::volk
     GPUOpen::VulkanMemoryAllocator
-    stb::stb)
+    stb::stb
+    freetype)
 
 target_compile_features(rendy PUBLIC cxx_std_20)
 

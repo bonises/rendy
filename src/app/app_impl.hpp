@@ -10,6 +10,7 @@
 #include "gpu/swapchain.hpp"
 #include "gpu/texture.hpp"
 #include "gpu/upload.hpp"
+#include "text/glyph_cache.hpp"
 #include "rendy/app/app.hpp"
 #include "rendy/canvas/canvas.hpp"
 
@@ -27,6 +28,7 @@ struct AppImpl {
     std::unique_ptr<gpu::BindlessTable> bindless;
     std::unique_ptr<gpu::Uploader> uploader;
     std::unique_ptr<gpu::TexturePool> textures;
+    std::unique_ptr<text::GlyphCache> glyphs;
     std::unique_ptr<Renderer2D> renderer2d;
     CanvasData canvasData;
 

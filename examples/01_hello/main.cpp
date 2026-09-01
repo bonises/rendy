@@ -3,6 +3,7 @@
 #include <rendy/rendy.hpp>
 
 #include <cmath>
+#include <cstdlib>
 
 using namespace rendy;
 
@@ -16,6 +17,8 @@ int main() {
 
     while (app.pollEvents()) {
         if (app.input().keyPressed(Key::Escape)) app.quit();
+        // Lets CI/scripts exercise the full shutdown path.
+        if (std::getenv("RENDY_AUTOQUIT") != nullptr && app.time() > 2.0) app.quit();
 
         auto frame = app.beginFrame({.clear = colors::slate});
         auto canvas = frame.canvas();
@@ -26,6 +29,12 @@ int main() {
                          .cornerRadius = 16.0f,
                          .borderWidth = 2.0f,
                          .borderColor = 0x585B70FF_rgba});
+        canvas.drawText("hej världen!", {216.0f, 130.0f}, {.size = 24.0f});
+        canvas.drawText("rendy — Vulkan 2D/3D", {216.0f, 164.0f},
+                        {.size = 15.0f, .color = 0xA6ADC8FF_rgba});
+
+        canvas.drawText(fmt::format("{:.0f} fps", app.fps()), {12.0f, 8.0f},
+                        {.size = 14.0f, .color = 0x6C7086FF_rgba});
 
         // A pulsing accent dot.
         const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(app.time()) * 3.0f);

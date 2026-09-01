@@ -7,6 +7,10 @@
 
 #include <vector>
 
+namespace rendy::text {
+class GlyphCache;
+}
+
 namespace rendy::detail {
 
 struct Quad2D {
@@ -24,6 +28,7 @@ inline constexpr float kQuadKindImage = 1.0f;
 inline constexpr float kQuadKindText = 2.0f;
 
 struct CanvasData {
+    text::GlyphCache* glyphCache = nullptr;
     std::vector<Quad2D> quads;
     std::vector<Vec4> clips;          // x0, y0, x1, y1
     std::vector<uint32_t> clipStack;  // indices into clips
