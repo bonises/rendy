@@ -6,8 +6,11 @@ model loading, text, and audio. For games, editors, and anything in between.
 
 | | |
 |---|---|
-| ![UI gallery](docs/img/ui_gallery.png) | ![3D scene](docs/img/scene3d.png) |
-| ![Model viewer](docs/img/model_viewer.png) | ![Text editor](docs/img/text_editor.png) |
+| ![Sponza](docs/img/sponza.png) | ![UI gallery](docs/img/ui_gallery.png) |
+| ![3D scene](docs/img/scene3d.png) | ![Model viewer](docs/img/model_viewer.png) |
+
+*Sponza with cascaded sun shadows, PBR and alpha-masked foliage — ~1200 fps
+at 1440×810 on an RTX 3090 (release build, vsync off).*
 
 ```cpp
 #include <rendy/rendy.hpp>

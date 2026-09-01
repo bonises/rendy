@@ -6,11 +6,21 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <string_view>
 
 using namespace rendy;
 
 int main(int argc, char** argv) {
-    auto appResult = App::create({.title = "rendy — model viewer", .size = {1440, 810}});
+    bool vsync = true;
+    const char* modelPath = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--no-vsync")
+            vsync = false;
+        else
+            modelPath = argv[i];
+    }
+    auto appResult =
+        App::create({.title = "rendy — model viewer", .size = {1440, 810}, .vsync = vsync});
     if (!appResult) {
         log::error("failed to start: {}", appResult.error().message);
         return 1;
@@ -36,7 +46,7 @@ int main(int argc, char** argv) {
                                      .range = 12.0f});
 
     NodeId model{};
-    const char* path = argc > 1 ? argv[1] : "DamagedHelmet.glb";
+    const char* path = modelPath != nullptr ? modelPath : "DamagedHelmet.glb";
     if (auto loaded = scene.loadGltf(path)) {
         model = loaded.value();
     } else {
