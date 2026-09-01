@@ -15,7 +15,7 @@ ctest --preset debug
 
 Presets: `debug` (validation layers on), `release`, `asan`. Options:
 `RENDY_BUILD_EXAMPLES`, `RENDY_BUILD_TESTS`, `RENDY_WERROR`,
-`RENDY_VULKAN_VALIDATION`, `RENDY_SHADER_HOT_RELOAD`, `RENDY_SANITIZE`.
+`RENDY_VULKAN_VALIDATION`, `RENDY_SANITIZE`.
 
 ## Where things live
 
@@ -43,9 +43,12 @@ Dependency pins: `cmake/Dependencies.cmake`. Shader build: `cmake/CompileShaders
 - GPU-side objects are generational `Handle<Tag>`s (`core/handle.hpp`).
 - Colors are sRGB floats (`core/color.hpp`); shaders convert to linear.
 - Screen space is top-left origin, +y down; depth is 0..1 (GLM forced).
-- Docs: `docs/` is the source of truth (`getting-started.md`, `guides/`,
-  `api/`, `internals/`). Update the matching guide + api page with each
-  feature milestone.
+- Docs: `docs/` is the source of truth — `getting-started.md`,
+  `guides/{2d-canvas,ui-css,3d,audio}.md`, `api/` (one page per module),
+  `internals/architecture.md`. Update the matching guide + api page when
+  changing a module's public surface.
+- Keep `shaders/scene_common.glsl` in sync with `FrameUbo`/`GpuMaterial`/
+  `GpuLight` in `src/scene/`.
 
 ## Architecture in one paragraph
 

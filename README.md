@@ -4,13 +4,19 @@ A C++20 rendering library built on Vulkan 1.3 — fast 2D UI with real CSS
 (flexbox, hot reload), forward-rendered PBR 3D with lights and shadows, glTF
 model loading, text, and audio. For games, editors, and anything in between.
 
+| | |
+|---|---|
+| ![UI gallery](docs/img/ui_gallery.png) | ![3D scene](docs/img/scene3d.png) |
+| ![Model viewer](docs/img/model_viewer.png) | ![Text editor](docs/img/text_editor.png) |
+
 ```cpp
 #include <rendy/rendy.hpp>
+using namespace rendy;
 
 int main() {
-    auto app = rendy::App::create({.title = "hello", .size = {1280, 720}}).value();
+    auto app = App::create({.title = "hello", .size = {1280, 720}}).value();
     while (app.pollEvents()) {
-        auto frame = app.beginFrame({.clear = rendy::colors::slate});
+        auto frame = app.beginFrame({.clear = colors::slate});
         frame.canvas().drawRect({{100, 100}, {200, 120}},
                                 {.color = 0xE74C3CFF_rgba, .cornerRadius = 12});
         frame.canvas().drawText("hej världen", {120, 260}, {.size = 24});

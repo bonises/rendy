@@ -10,7 +10,6 @@ option(RENDY_BUILD_EXAMPLES "Build the example apps" ON)
 option(RENDY_BUILD_TESTS "Build the unit tests" ON)
 option(RENDY_WERROR "Treat warnings as errors (CI)" OFF)
 option(RENDY_VULKAN_VALIDATION "Enable Vulkan validation layers by default" OFF)
-option(RENDY_SHADER_HOT_RELOAD "Link glslang into rendy for runtime shader reload" OFF)
 set(RENDY_SANITIZE "" CACHE STRING "Semicolon list of sanitizers, e.g. address;undefined")
 
 include(cmake/Warnings.cmake)
