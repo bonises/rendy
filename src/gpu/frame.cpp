@@ -73,12 +73,18 @@ FrameRing::FrameInfo FrameRing::begin() {
     }
     flushDeletions(slot());
 
-    // Acquire, recreating the swapchain when it's stale.
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    // Acquire, recreating the swapchain when it's stale. If we still can't
+    // acquire after a recreate, skip the frame instead of submitting with an
+    // unsignaled semaphore (that would hang the queue).
+    bool acquired = false;
+    for (int attempt = 0; attempt < 2 && !acquired; ++attempt) {
         const VkResult result =
             vkAcquireNextImageKHR(ctx_.device(), swapchain_.handle(), UINT64_MAX,
                                   frame.acquireSemaphore, VK_NULL_HANDLE, &imageIndex_);
-        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) break;
+        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+            acquired = true;
+            break;
+        }
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             if (!swapchain_.recreate()) return {};
             if (renderFinished_.size() != swapchain_.imageCount()) {
@@ -95,6 +101,7 @@ FrameRing::FrameInfo FrameRing::begin() {
         }
         VK_CHECK(result);
     }
+    if (!acquired) return {};
 
     vkResetCommandPool(ctx_.device(), frame.pool, 0);
     VkCommandBufferBeginInfo beginInfo{};
