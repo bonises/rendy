@@ -14,5 +14,6 @@ layout(push_constant) uniform PC {
 } pc;
 
 void main() {
-    gl_Position = pc.lightViewProj * transforms[pc.transformIndex] * vec4(inPosition, 1.0);
+    gl_Position = pc.lightViewProj * transforms[pc.transformIndex + gl_InstanceIndex] *
+                  vec4(inPosition, 1.0);
 }

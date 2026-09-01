@@ -19,7 +19,8 @@ layout(location = 2) out vec4 vTangent;
 layout(location = 3) out vec2 vUV;
 
 void main() {
-    const mat4 model = transforms[pc.transformIndex];
+    // Instanced draws pass a base index; instance i uses the next slot.
+    const mat4 model = transforms[pc.transformIndex + gl_InstanceIndex];
     const vec4 worldPos = model * vec4(inPosition, 1.0);
     vWorldPos = worldPos.xyz;
 

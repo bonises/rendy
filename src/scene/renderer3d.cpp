@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 
 namespace rendy::detail {
 namespace {
@@ -599,7 +600,7 @@ void Renderer3D::updateDescriptors(uint32_t slot) {
 
 void Renderer3D::renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array, uint32_t layer,
                                   const Mat4& lightViewProj, SceneImpl& scene,
-                                  const std::vector<uint32_t>& transformIndexOfNode) {
+                                  const std::vector<ShadowGroup>& groups) {
     VkRenderingAttachmentInfo depthAttachment{};
     depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     depthAttachment.imageView = array.layerViews[layer];
@@ -621,21 +622,16 @@ void Renderer3D::renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array,
     const VkRect2D scissor{{0, 0}, {array.size, array.size}};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
-        const SceneNode& node = scene.nodes[i];
-        if (!node.alive || !node.mesh.valid()) continue;
-        // Blended surfaces (glass) don't block light in v1.
-        if (node.material.id < scene.materialAlphaModes.size() &&
-            scene.materialAlphaModes[node.material.id] == AlphaMode::Blend)
-            continue;
+    for (const ShadowGroup& group : groups) {
         ShadowPush push{};
         push.lightViewProj = lightViewProj;
-        push.transformIndex = transformIndexOfNode[i];
+        push.transformIndex = group.baseTransform;
         vkCmdPushConstants(cmd, meshLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(push), &push);
-        const MeshRange& range = scene.meshes->range(node.mesh);
-        vkCmdDrawIndexed(cmd, range.indexCount, 1, range.firstIndex, range.vertexOffset, 0);
+        const MeshRange& range = scene.meshes->range(group.mesh);
+        vkCmdDrawIndexed(cmd, range.indexCount, group.instances, range.firstIndex,
+                         range.vertexOffset, 0);
     }
     vkCmdEndRendering(cmd);
 }
@@ -665,18 +661,23 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         uint32_t transformIndex;
         uint32_t materialIndex;
         MeshHandle mesh;
-        float viewDepth; // blend sorting
+        float viewDepth;     // blend sorting
+        uint32_t instances;  // opaque groups
     };
     std::vector<Mat4> transforms;
-    std::vector<DrawItem> draws;
     std::vector<DrawItem> blendDraws;
-    std::vector<uint32_t> transformIndexOfNode(scene.nodes.size(), 0);
-    transforms.reserve(scene.nodes.size());
+    // Everything is grouped for instancing: shadow groups hold ALL alive
+    // opaque casters (mesh-keyed), camera groups hold the frustum-culled
+    // visible set (mesh+material-keyed); blended nodes draw individually.
+    std::map<uint32_t, std::vector<Mat4>> shadowGroupBuild;
+    std::map<std::pair<uint32_t, uint32_t>, std::vector<Mat4>> opaqueGroups;
     for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
         const SceneNode& node = scene.nodes[i];
         if (!node.alive || !node.mesh.valid()) continue;
-        transformIndexOfNode[i] = static_cast<uint32_t>(transforms.size());
-        transforms.push_back(node.world);
+
+        const bool blends = node.material.id < scene.materialAlphaModes.size() &&
+                            scene.materialAlphaModes[node.material.id] == AlphaMode::Blend;
+        if (!blends) shadowGroupBuild[node.mesh.id].push_back(node.world);
 
         const MeshRange& range = scene.meshes->range(node.mesh);
         const Vec3 worldCenter = Vec3(node.world * Vec4{range.boundsCenter, 1.0f});
@@ -686,11 +687,29 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
             range.boundsRadius * std::max(scale.x, std::max(scale.y, scale.z));
         if (!frustum.visible(worldCenter, worldRadius)) continue;
 
-        const bool blends = node.material.id < scene.materialAlphaModes.size() &&
-                            scene.materialAlphaModes[node.material.id] == AlphaMode::Blend;
-        const float viewDepth = -(ubo.view * Vec4{worldCenter, 1.0f}).z;
-        (blends ? blendDraws : draws)
-            .push_back({transformIndexOfNode[i], node.material.id, node.mesh, viewDepth});
+        if (blends) {
+            const float viewDepth = -(ubo.view * Vec4{worldCenter, 1.0f}).z;
+            blendDraws.push_back({static_cast<uint32_t>(transforms.size()), node.material.id,
+                                  node.mesh, viewDepth, 1});
+            transforms.push_back(node.world);
+        } else {
+            opaqueGroups[{node.mesh.id, node.material.id}].push_back(node.world);
+        }
+    }
+    std::vector<ShadowGroup> shadowGroups;
+    shadowGroups.reserve(shadowGroupBuild.size());
+    for (auto& [meshId, matrices] : shadowGroupBuild) {
+        shadowGroups.push_back({static_cast<uint32_t>(transforms.size()),
+                                static_cast<uint32_t>(matrices.size()), MeshHandle{meshId}});
+        transforms.insert(transforms.end(), matrices.begin(), matrices.end());
+    }
+    std::vector<DrawItem> draws;
+    draws.reserve(opaqueGroups.size());
+    for (auto& [key, matrices] : opaqueGroups) {
+        draws.push_back({static_cast<uint32_t>(transforms.size()), key.second,
+                         MeshHandle{key.first}, 0.0f,
+                         static_cast<uint32_t>(matrices.size())});
+        transforms.insert(transforms.end(), matrices.begin(), matrices.end());
     }
     // Transparent surfaces draw farthest-first over the opaque result.
     std::sort(blendDraws.begin(), blendDraws.end(),
@@ -876,10 +895,9 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         if (haveSun)
             for (uint32_t cascade = 0; cascade < kMaxCascades; ++cascade)
                 renderShadowPass(cmd, cascadeShadows_, cascade, ubo.cascadeMatrices[cascade],
-                                 scene, transformIndexOfNode);
+                                 scene, shadowGroups);
         for (const SpotShadowJob& job : spotJobs)
-            renderShadowPass(cmd, spotShadows_, job.layer, job.matrix, scene,
-                             transformIndexOfNode);
+            renderShadowPass(cmd, spotShadows_, job.layer, job.matrix, scene, shadowGroups);
         for (const PointShadowJob& job : pointJobs) {
             const Mat4 proj =
                 glm::perspective(glm::radians(90.0f), 1.0f, kPointShadowNear, job.range);
@@ -894,7 +912,7 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
                 const Mat4 view =
                     glm::lookAt(job.position, job.position + faces[face].dir, faces[face].up);
                 renderShadowPass(cmd, pointShadows_, job.cubeIndex * 6 + face, proj * view,
-                                 scene, transformIndexOfNode);
+                                 scene, shadowGroups);
             }
         }
     }
@@ -979,7 +997,7 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                    sizeof(push), &push);
                 const MeshRange& range = scene.meshes->range(draw.mesh);
-                vkCmdDrawIndexed(cmd, range.indexCount, 1, range.firstIndex,
+                vkCmdDrawIndexed(cmd, range.indexCount, draw.instances, range.firstIndex,
                                  range.vertexOffset, 0);
             }
         };

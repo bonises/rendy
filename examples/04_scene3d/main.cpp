@@ -6,11 +6,23 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <string_view>
 
 using namespace rendy;
 
-int main() {
-    auto appResult = App::create({.title = "rendy — scene3d", .size = {1440, 810}});
+int main(int argc, char** argv) {
+    // 04_scene3d [instanceCount] [--no-vsync] — extra args spawn a field of
+    // instanced cubes to stress the grouped-draw path.
+    int stressCount = 0;
+    bool vsync = true;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--no-vsync")
+            vsync = false;
+        else
+            stressCount = std::atoi(argv[i]);
+    }
+    auto appResult = App::create(
+        {.title = "rendy — scene3d", .size = {1440, 810}, .vsync = vsync});
     if (!appResult) {
         log::error("failed to start: {}", appResult.error().message);
         return 1;
@@ -50,6 +62,21 @@ int main() {
         Transform transform;
         transform.position = {startX + spacing * static_cast<float>(i), 0.75f, 0.0f};
         spinners[i] = scene.addMesh(shapes[i].mesh, material, transform);
+    }
+
+    if (stressCount > 0) {
+        // One mesh + one material shared by every instance → a handful of
+        // instanced draw calls no matter the count.
+        auto cubeMesh = scene.createMesh(primitives::cube({0.35f, 0.35f, 0.35f}));
+        auto cubeMaterial = scene.createMaterial(
+            {.baseColor = Color::rgb(0x94E2D5), .metallic = 0.3f, .roughness = 0.4f});
+        const int side = std::max(1, static_cast<int>(std::sqrt(static_cast<float>(stressCount))));
+        for (int i = 0; i < stressCount; ++i) {
+            Transform t;
+            t.position = {(i % side - side / 2) * 0.9f, 0.2f + 0.25f * ((i / side) % 3),
+                          (i / side - side / 2) * 0.9f - 14.0f};
+            scene.addMesh(cubeMesh, cubeMaterial, t);
+        }
     }
 
     // A glass dome over the middle shapes (AlphaMode::Blend).

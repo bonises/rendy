@@ -88,10 +88,15 @@ mtime change (debug builds).
   recomputed each draw), `MeshStore` (all vertices/indices in two big
   device-local buffers, bound once), `GpuMaterial` array mirrored to a
   mapped SSBO each frame, lights likewise.
-- **Draw path** (`renderer3d.cpp`): transforms for every alive mesh node go
-  into a per-frame SSBO (shadow casters may be off-screen); the camera pass
-  draws the frustum-culled subset (sphere vs 6 planes). Push constants =
-  transform index + material index; one pipeline for all opaque meshes.
+- **Draw path** (`renderer3d.cpp`): everything is instanced. Shadow groups
+  (all alive opaque casters, keyed by mesh) and camera groups (the
+  frustum-culled visible set, keyed by mesh+material) each get a contiguous
+  run of world matrices in the per-frame transform SSBO and one
+  `vkCmdDrawIndexed` with an instance count; shaders index
+  `transforms[pushBase + gl_InstanceIndex]`. Blended nodes draw
+  individually, sorted back-to-front, on a no-depth-write blend pipeline
+  after the opaque pass; alpha-mask materials discard in the fragment
+  shader. 20k instanced cubes render at ~270 fps with full shadows.
 - **Shadows**: fixed arrays created up front — CSM 2048²×4, spots 1024²×8,
   point cubes 512²×24 — rendered by one depth-only vertex-shader pipeline
   (light matrix in push constants), sampled via compare samplers (PCF 3×3)

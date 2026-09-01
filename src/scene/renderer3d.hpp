@@ -103,9 +103,14 @@ private:
     };
     void createShadowArray(ShadowArray* array, uint32_t size, uint32_t layers, bool cube);
     void destroyShadowArray(ShadowArray* array);
+    struct ShadowGroup {
+        uint32_t baseTransform;
+        uint32_t instances;
+        MeshHandle mesh;
+    };
     void renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array, uint32_t layer,
                           const Mat4& lightViewProj, SceneImpl& scene,
-                          const std::vector<uint32_t>& transformIndexOfNode);
+                          const std::vector<ShadowGroup>& groups);
 
     ShadowArray cascadeShadows_; // 2048², kMaxCascades layers
     ShadowArray spotShadows_;    // 1024², kMaxSpotShadows layers
