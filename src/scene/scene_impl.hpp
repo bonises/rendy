@@ -57,6 +57,9 @@ struct SceneAnimation {
     bool loop = true;
     float speed = 1.0f;
     double time = 0.0;
+    float weight = 1.0f;       ///< current blend weight
+    float targetWeight = 1.0f; ///< fades move weight toward this
+    float fadeRate = 0.0f;     ///< weight units per second (0 = instant)
 };
 
 struct Skin {
@@ -74,6 +77,7 @@ struct SceneImpl {
     std::vector<AlphaMode> materialAlphaModes; // parallel to materials
     std::vector<SceneAnimation> animations;
     std::vector<Skin> skins;
+    std::vector<TransformAccumulator> animationScratch; // per-node blend state
     std::shared_ptr<EnvironmentData> environment; // null = flat ambient
     float environmentIntensity = 1.0f;
     Color ambient{0.03f, 0.03f, 0.04f, 1.0f};

@@ -101,4 +101,58 @@ inline bool animationSampleTime(float playbackTime, float startTime, float durat
     return true;
 }
 
+/// Accumulates weighted TRS samples from several clips for one node and
+/// resolves them into a Transform (weights are normalized, so a single clip
+/// at weight 0.3 still gives its full pose).
+struct TransformAccumulator {
+    Vec3 translation{0.0f};
+    float translationWeight = 0.0f;
+    Vec4 rotation{0.0f}; // accumulated quat, hemisphere-corrected
+    float rotationWeight = 0.0f;
+    Vec3 scale{0.0f};
+    float scaleWeight = 0.0f;
+
+    void add(AnimationChannel::Path path, const Vec4& value, float weight) {
+        switch (path) {
+        case AnimationChannel::Path::Translation:
+            translation += Vec3(value) * weight;
+            translationWeight += weight;
+            break;
+        case AnimationChannel::Path::Rotation: {
+            // Keep quaternions in the same hemisphere before averaging.
+            Vec4 q = value;
+            if (rotationWeight > 0.0f && glm::dot(q, rotation) < 0.0f) q = -q;
+            rotation += q * weight;
+            rotationWeight += weight;
+            break;
+        }
+        case AnimationChannel::Path::Scale:
+            scale += Vec3(value) * weight;
+            scaleWeight += weight;
+            break;
+        }
+    }
+
+    /// Writes the blended result onto `transform` (untouched channels keep
+    /// their current values).
+    void apply(Transform& transform) const {
+        if (translationWeight > 1e-5f) transform.position = translation / translationWeight;
+        if (rotationWeight > 1e-5f) {
+            const Vec4 q = rotation / rotationWeight;
+            const Quat quat{q.w, q.x, q.y, q.z};
+            const float length = glm::length(quat);
+            if (length > 1e-5f) transform.rotation = quat / length;
+        }
+        if (scaleWeight > 1e-5f) transform.scale = scale / scaleWeight;
+    }
+};
+
+/// Moves `weight` toward `target` by at most rate*dt. Returns the new value.
+inline float advanceWeight(float weight, float target, float rate, float dt) {
+    const float delta = target - weight;
+    const float step = rate * dt;
+    if (std::abs(delta) <= step) return target;
+    return weight + (delta > 0.0f ? step : -step);
+}
+
 } // namespace rendy::detail

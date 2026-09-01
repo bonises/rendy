@@ -200,6 +200,48 @@ void Scene::playAnimation(AnimationHandle handle, bool loop, float speed) {
     animation.loop = loop;
     animation.speed = speed;
     animation.time = 0.0;
+    animation.weight = 1.0f;
+    animation.targetWeight = 1.0f;
+    animation.fadeRate = 0.0f;
+}
+
+void Scene::setAnimationWeight(AnimationHandle handle, float weight) {
+    if (!handle.valid() || handle.index >= impl_->animations.size()) return;
+    auto& animation = impl_->animations[handle.index];
+    animation.weight = std::max(weight, 0.0f);
+    animation.targetWeight = animation.weight;
+    animation.fadeRate = 0.0f;
+}
+
+void Scene::crossfadeAnimation(AnimationHandle to, float fadeSeconds, bool loop, float speed) {
+    if (!to.valid() || to.index >= impl_->animations.size()) return;
+    const float rate = fadeSeconds > 0.0f ? 1.0f / fadeSeconds : 0.0f;
+    for (uint32_t i = 0; i < impl_->animations.size(); ++i) {
+        auto& animation = impl_->animations[i];
+        if (i == to.index || !animation.playing) continue;
+        animation.targetWeight = 0.0f;
+        animation.fadeRate = rate;
+    }
+    auto& target = impl_->animations[to.index];
+    if (!target.playing) {
+        target.playing = true;
+        target.time = 0.0;
+        target.weight = fadeSeconds > 0.0f ? 0.0f : 1.0f;
+    }
+    target.loop = loop;
+    target.speed = speed;
+    target.targetWeight = 1.0f;
+    target.fadeRate = rate;
+}
+
+void Scene::crossfadeAnimation(std::string_view name, float fadeSeconds, bool loop,
+                               float speed) {
+    const AnimationHandle handle = findAnimation(name);
+    if (!handle.valid()) {
+        log::warn("animation '{}' not found", name);
+        return;
+    }
+    crossfadeAnimation(handle, fadeSeconds, loop, speed);
 }
 
 void Scene::playAnimation(std::string_view name, bool loop, float speed) {
@@ -226,9 +268,26 @@ bool Scene::animationPlaying(AnimationHandle handle) const {
 }
 
 void Scene::updateAnimations(float dt) {
+    // Weighted blend: every playing clip's samples accumulate per node, then
+    // resolve with normalized weights (so a crossfade sums to a full pose).
+    auto& scratch = impl_->animationScratch;
+    scratch.assign(impl_->nodes.size(), detail::TransformAccumulator{});
+    bool anySamples = false;
+
     for (auto& animation : impl_->animations) {
         if (!animation.playing) continue;
         animation.time += static_cast<double>(dt * animation.speed);
+
+        // Fades.
+        if (animation.fadeRate > 0.0f)
+            animation.weight = detail::advanceWeight(animation.weight, animation.targetWeight,
+                                                     animation.fadeRate, dt);
+        else
+            animation.weight = animation.targetWeight;
+        if (animation.weight <= 0.0f && animation.targetWeight <= 0.0f) {
+            animation.playing = false; // faded out
+            continue;
+        }
 
         float sampleTime = 0.0f;
         const bool keepPlaying = detail::animationSampleTime(
@@ -237,22 +296,16 @@ void Scene::updateAnimations(float dt) {
         if (!keepPlaying) animation.playing = false; // apply the final pose below
 
         for (const auto& channel : animation.channels) {
-            if (channel.node >= impl_->nodes.size()) continue;
-            Transform& transform = impl_->nodes[channel.node].local;
+            if (channel.node >= scratch.size()) continue;
             const Vec4 value = detail::sampleAnimationChannel(channel, sampleTime);
-            switch (channel.path) {
-            case detail::AnimationChannel::Path::Translation:
-                transform.position = Vec3(value);
-                break;
-            case detail::AnimationChannel::Path::Rotation:
-                transform.rotation = Quat{value.w, value.x, value.y, value.z};
-                break;
-            case detail::AnimationChannel::Path::Scale:
-                transform.scale = Vec3(value);
-                break;
-            }
+            scratch[channel.node].add(channel.path, value, animation.weight);
+            anySamples = true;
         }
     }
+
+    if (!anySamples) return;
+    for (uint32_t i = 0; i < scratch.size(); ++i)
+        scratch[i].apply(impl_->nodes[i].local);
 }
 
 float Scene::approximateRadius(NodeId root) {

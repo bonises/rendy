@@ -27,6 +27,8 @@ see the [3D guide](../guides/3d.md) for concepts.
 | `findAnimation` | `AnimationHandle findAnimation(std::string_view) const` | |
 | `playAnimation` | `void playAnimation(handle\|name, bool loop = true, float speed = 1)` | |
 | `stopAnimation` / `stopAllAnimations` / `animationPlaying` | | |
+| `setAnimationWeight` | `void setAnimationWeight(handle, float)` | relative blend weight |
+| `crossfadeAnimation` | `void crossfadeAnimation(handle\|name, float fadeSeconds, loop, speed)` | fade in, others fade out |
 | `updateAnimations` | `void updateAnimations(float dt)` | once per frame |
 | `approximateRadius` | `float approximateRadius(NodeId)` | subtree bounding radius |
 

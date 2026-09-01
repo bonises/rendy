@@ -116,6 +116,17 @@ public:
     void stopAllAnimations();
     [[nodiscard]] bool animationPlaying(AnimationHandle animation) const;
 
+    /// Blend weight for a playing clip (weights are relative — they're
+    /// normalized across clips animating the same node).
+    void setAnimationWeight(AnimationHandle animation, float weight);
+    /// Smoothly fade `to` in over `fadeSeconds` while fading every other
+    /// playing clip out (they stop at weight 0). The go-to way to switch
+    /// between e.g. Walk and Run without a pop.
+    void crossfadeAnimation(AnimationHandle to, float fadeSeconds, bool loop = true,
+                            float speed = 1.0f);
+    void crossfadeAnimation(std::string_view name, float fadeSeconds, bool loop = true,
+                            float speed = 1.0f);
+
     /// Advance playing clips and write the sampled values into node
     /// transforms. Call once per frame before drawing.
     void updateAnimations(float dt);

@@ -89,10 +89,9 @@ int main(int argc, char** argv) {
         if (input.keyPressed(Key::Escape)) app.quit();
         if (input.keyPressed(Key::Space)) spin = !spin;
         if (input.keyPressed(Key::A) && !animationNames.empty()) {
-            scene.stopAllAnimations();
             currentAnimation = (currentAnimation + 1) % static_cast<int>(animationNames.size());
-            scene.playAnimation(
-                Scene::AnimationHandle{static_cast<uint32_t>(currentAnimation)});
+            scene.crossfadeAnimation(
+                Scene::AnimationHandle{static_cast<uint32_t>(currentAnimation)}, 0.35f);
         }
         if (std::getenv("RENDY_AUTOQUIT") != nullptr && app.time() > 2.5) app.quit();
 
