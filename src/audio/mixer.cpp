@@ -79,7 +79,10 @@ struct MixerImpl {
 
     Voice voices[kVoiceCount];
     std::atomic<float> masterVolume{1.0f};
-    std::vector<float> scratch;
+    // Fixed mix buffer: the callback mixes in chunks of at most
+    // kMaxChunkFrames so it NEVER allocates, whatever SDL requests.
+    static constexpr int kMaxChunkFrames = 4096;
+    float scratch[kMaxChunkFrames * kChannels];
 
     // Excludes the audio callback while voice state is rearranged.
     struct StreamLock {
@@ -96,12 +99,15 @@ struct MixerImpl {
 
     static void callback(void* userdata, SDL_AudioStream* stream, int additionalAmount, int) {
         auto* self = static_cast<MixerImpl*>(userdata);
-        const int frames = additionalAmount / (kChannels * static_cast<int>(sizeof(float)));
-        if (frames <= 0) return;
-        self->scratch.assign(static_cast<size_t>(frames) * kChannels, 0.0f);
-        self->mix(self->scratch.data(), static_cast<size_t>(frames));
-        SDL_PutAudioStreamData(stream, self->scratch.data(),
-                               frames * kChannels * static_cast<int>(sizeof(float)));
+        constexpr int kFrameBytes = kChannels * static_cast<int>(sizeof(float));
+        int frames = additionalAmount / kFrameBytes;
+        while (frames > 0) {
+            const int chunk = std::min(frames, kMaxChunkFrames);
+            std::fill_n(self->scratch, static_cast<size_t>(chunk) * kChannels, 0.0f);
+            self->mix(self->scratch, static_cast<size_t>(chunk));
+            SDL_PutAudioStreamData(stream, self->scratch, chunk * kFrameBytes);
+            frames -= chunk;
+        }
     }
 
     void mix(float* out, size_t frames) {
@@ -162,9 +168,6 @@ Mixer::Mixer() : impl_(std::make_unique<MixerImpl>()) {
         log::error("audio: failed to open output device: {}", SDL_GetError());
         return;
     }
-    // Preallocate the mix buffer so the audio callback never heap-allocates
-    // in steady state (assign() reuses capacity).
-    impl_->scratch.reserve(16384 * kChannels);
     SDL_ResumeAudioStreamDevice(impl_->stream);
     log::debug("audio: output open ({} Hz, {} ch)", kSampleRate, kChannels);
 }
@@ -181,7 +184,8 @@ bool Mixer::ok() const { return impl_->stream != nullptr; }
 
 Result<SoundRef> Mixer::createSound(const float* frames, size_t frameCount, int channels,
                                     int sampleRate) {
-    if (channels < 1 || channels > 8 || frameCount == 0)
+    if (frames == nullptr) return err("audio: null PCM pointer");
+    if (channels < 1 || channels > 8 || frameCount == 0 || frameCount > (1u << 31))
         return err("audio: invalid PCM ({} channels, {} frames)", channels, frameCount);
     if (sampleRate < 1000 || sampleRate > 768000)
         return err("audio: unsupported sample rate {}", sampleRate);

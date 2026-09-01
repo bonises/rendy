@@ -27,7 +27,9 @@ void TexturePool::destroyEntry(Entry& entry) {
 
 Result<TextureRef> TexturePool::create(const void* pixels, IVec2 size, VkFormat format,
                                        uint32_t bytesPerPixel, const TextureOptions& options) {
-    if (size.x <= 0 || size.y <= 0) return err("texture size must be positive, got {}x{}", size.x, size.y);
+    if (pixels == nullptr) return err("texture: null pixel pointer");
+    if (size.x <= 0 || size.y <= 0 || size.x > 16384 || size.y > 16384)
+        return err("texture: invalid size {}x{}", size.x, size.y);
     const auto width = static_cast<uint32_t>(size.x);
     const auto height = static_cast<uint32_t>(size.y);
 

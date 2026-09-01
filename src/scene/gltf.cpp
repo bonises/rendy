@@ -14,6 +14,7 @@
 #include <fmt/core.h>
 
 #include <cstring>
+#include <limits>
 #include <filesystem>
 #include <unordered_map>
 
@@ -385,8 +386,6 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
             sceneChannel.times.resize(input.count);
             fastgltf::iterateAccessorWithIndex<float>(
                 asset.get(), input, [&](float t, size_t i) { sceneChannel.times[i] = t; });
-            if (!sceneChannel.times.empty())
-                clip.duration = std::max(clip.duration, sceneChannel.times.back());
 
             const auto& output = asset->accessors[sampler.outputAccessor];
             sceneChannel.values.resize(output.count, Vec4{0.0f});
@@ -401,6 +400,18 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
                     });
             }
             clip.channels.push_back(std::move(sceneChannel));
+        }
+        // Clips need not start at t=0 (trimmed exports); track the window.
+        float clipStart = std::numeric_limits<float>::max();
+        float clipEnd = 0.0f;
+        for (const auto& channel : clip.channels) {
+            if (channel.times.empty()) continue;
+            clipStart = std::min(clipStart, channel.times.front());
+            clipEnd = std::max(clipEnd, channel.times.back());
+        }
+        if (clipStart <= clipEnd) {
+            clip.startTime = clipStart;
+            clip.duration = clipEnd - clipStart;
         }
         impl_->animations.push_back(std::move(clip));
     }

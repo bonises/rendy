@@ -9,6 +9,8 @@ add_executable(rendy_tests
   css/test_parser.cpp
   css/test_cascade.cpp
   layout/test_layout.cpp
+  scene/test_animation.cpp
+  audio/test_mixer.cpp
 )
 target_include_directories(rendy_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(rendy_tests PRIVATE yogacore)

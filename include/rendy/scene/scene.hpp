@@ -73,7 +73,10 @@ public:
     void removeNode(NodeId node);
 
     // ---- access ----------------------------------------------------------
+    // Invalid/foreign NodeIds degrade safely: setters no-op with a warning,
+    // reference getters return an inert dummy.
 
+    [[nodiscard]] bool validNode(NodeId id) const;
     [[nodiscard]] NodeRef node(NodeId id) { return NodeRef(this, id); }
     [[nodiscard]] Transform& transform(NodeId id);
     /// Valid for nodes created with addLight.

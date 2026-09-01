@@ -690,6 +690,11 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     std::vector<DrawItem> skinnedDraws;
     std::vector<ShadowGroup> skinnedShadowDraws;
     std::vector<Mat4> jointMatrices;
+    // Caching per skinIndex is correct even when several mesh nodes share a
+    // skin: per the glTF spec the skinned mesh node's own transform MUST be
+    // ignored, so every user of a skin gets the identical world-space pose
+    // (jointWorld * inverseBind). Separate loadGltf calls create separate
+    // skins, so no false sharing across model instances either.
     std::map<int32_t, uint32_t> jointBaseOfSkin; // built once per skin per frame
     auto jointBaseFor = [&](int32_t skinIndex) -> uint32_t {
         if (auto it = jointBaseOfSkin.find(skinIndex); it != jointBaseOfSkin.end())

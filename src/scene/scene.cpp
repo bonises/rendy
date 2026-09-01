@@ -1,6 +1,7 @@
 #include "rendy/scene/scene.hpp"
 
 #include "app/app_impl.hpp"
+#include "scene/animation_sampler.hpp"
 #include "scene/scene_impl.hpp"
 
 #include <cmath>
@@ -65,6 +66,10 @@ NodeId Scene::addMesh(const MeshData& data, MaterialHandle material,
 }
 
 NodeId Scene::addMesh(MeshHandle mesh, MaterialHandle material, const Transform& transform) {
+    if (material.id >= impl_->materials.size()) {
+        log::warn("Scene::addMesh: invalid MaterialHandle {}, using default", material.id);
+        material = MaterialHandle{0};
+    }
     detail::SceneNode node;
     node.local = transform;
     node.mesh = mesh;
@@ -92,8 +97,15 @@ NodeId Scene::addLight(const Light& light, const Transform& transform) {
     return id;
 }
 
+// A NodeId is only meaningful for the Scene that produced it; foreign or
+// stale ids must degrade safely, not index out of bounds.
+bool Scene::validNode(NodeId id) const {
+    return id.valid() && id.index < impl_->nodes.size();
+}
+
 void Scene::setParent(NodeId child, NodeId parent) {
-    if (!child.valid()) return;
+    if (!validNode(child)) return;
+    if (parent.valid() && !validNode(parent)) return;
     // Reject cycles.
     for (uint32_t cursor = parent.index; cursor != UINT32_MAX;
          cursor = impl_->nodes[cursor].parent)
@@ -108,13 +120,32 @@ void Scene::removeNode(NodeId node) {
         if (impl_->nodes[i].parent == node.index) removeNode(NodeId{i});
 }
 
-Transform& Scene::transform(NodeId id) { return impl_->nodes[id.index].local; }
+Transform& Scene::transform(NodeId id) {
+    if (!validNode(id)) {
+        log::warn("Scene::transform: invalid NodeId {}", id.index);
+        static Transform dummy;
+        dummy = Transform{}; // callers may have scribbled on it
+        return dummy;
+    }
+    return impl_->nodes[id.index].local;
+}
 
 Light& Scene::light(NodeId id) {
+    if (!validNode(id) || impl_->nodes[id.index].lightIndex < 0) {
+        log::warn("Scene::light: NodeId {} is not a light", id.index);
+        static Light dummy;
+        dummy = Light{};
+        return dummy;
+    }
     return impl_->lights[static_cast<size_t>(impl_->nodes[id.index].lightIndex)];
 }
 
 void Scene::setMaterial(NodeId node, MaterialHandle material) {
+    if (!validNode(node)) return;
+    if (material.id >= impl_->materials.size()) {
+        log::warn("Scene::setMaterial: invalid MaterialHandle {}", material.id);
+        return;
+    }
     impl_->nodes[node.index].material = material;
 }
 
@@ -123,62 +154,6 @@ void Scene::setAmbient(Color color) { impl_->ambient = color; }
 // Scene::loadGltf lives in gltf.cpp.
 
 // --------------------------------------------------------------- animation
-
-namespace {
-
-// Sample one channel at time t (t already wrapped/clamped by the caller).
-Vec4 sampleChannel(const detail::AnimationChannel& channel, float t) {
-    using Interp = detail::AnimationChannel::Interpolation;
-    const auto& times = channel.times;
-    const bool cubic = channel.interpolation == Interp::CubicSpline;
-    const size_t stride = cubic ? 3 : 1; // inTangent, value, outTangent
-    auto valueAt = [&](size_t key) { return channel.values[key * stride + (cubic ? 1 : 0)]; };
-
-    if (times.empty()) return Vec4{0.0f};
-    if (t <= times.front()) return valueAt(0);
-    if (t >= times.back()) return valueAt(times.size() - 1);
-
-    const auto it = std::upper_bound(times.begin(), times.end(), t);
-    const size_t next = static_cast<size_t>(it - times.begin());
-    const size_t prev = next - 1;
-    const float span = times[next] - times[prev];
-    const float u = span > 0.0f ? (t - times[prev]) / span : 0.0f;
-
-    switch (channel.interpolation) {
-    case Interp::Step:
-        return valueAt(prev);
-    case Interp::Linear:
-        if (channel.path == detail::AnimationChannel::Path::Rotation) {
-            const Vec4 a = valueAt(prev);
-            const Vec4 b = valueAt(next);
-            const Quat qa{a.w, a.x, a.y, a.z};
-            const Quat qb{b.w, b.x, b.y, b.z};
-            const Quat q = glm::slerp(qa, qb, u);
-            return {q.x, q.y, q.z, q.w};
-        }
-        return glm::mix(valueAt(prev), valueAt(next), u);
-    case Interp::CubicSpline: {
-        // glTF Hermite: p(u) = h00 v0 + h10 d b0 + h01 v1 + h11 d a1
-        const Vec4 v0 = channel.values[prev * 3 + 1];
-        const Vec4 b0 = channel.values[prev * 3 + 2]; // out-tangent of prev
-        const Vec4 a1 = channel.values[next * 3 + 0]; // in-tangent of next
-        const Vec4 v1 = channel.values[next * 3 + 1];
-        const float u2 = u * u;
-        const float u3 = u2 * u;
-        Vec4 result = (2.0f * u3 - 3.0f * u2 + 1.0f) * v0 +
-                      (u3 - 2.0f * u2 + u) * span * b0 +
-                      (-2.0f * u3 + 3.0f * u2) * v1 + (u3 - u2) * span * a1;
-        if (channel.path == detail::AnimationChannel::Path::Rotation) {
-            const Quat q = glm::normalize(Quat{result.w, result.x, result.y, result.z});
-            result = {q.x, q.y, q.z, q.w};
-        }
-        return result;
-    }
-    }
-    return valueAt(prev);
-}
-
-} // namespace
 
 std::vector<std::string> Scene::animationNames() const {
     std::vector<std::string> names;
@@ -229,21 +204,17 @@ void Scene::updateAnimations(float dt) {
     for (auto& animation : impl_->animations) {
         if (!animation.playing) continue;
         animation.time += static_cast<double>(dt * animation.speed);
-        float t = static_cast<float>(animation.time);
-        if (animation.duration > 0.0f) {
-            if (animation.loop) {
-                t = std::fmod(t, animation.duration);
-                if (t < 0.0f) t += animation.duration;
-            } else if (t >= animation.duration) {
-                t = animation.duration;
-                animation.playing = false;
-            }
-        }
+
+        float sampleTime = 0.0f;
+        const bool keepPlaying = detail::animationSampleTime(
+            static_cast<float>(animation.time), animation.startTime, animation.duration,
+            animation.loop, &sampleTime);
+        if (!keepPlaying) animation.playing = false; // apply the final pose below
 
         for (const auto& channel : animation.channels) {
             if (channel.node >= impl_->nodes.size()) continue;
             Transform& transform = impl_->nodes[channel.node].local;
-            const Vec4 value = sampleChannel(channel, t);
+            const Vec4 value = detail::sampleAnimationChannel(channel, sampleTime);
             switch (channel.path) {
             case detail::AnimationChannel::Path::Translation:
                 transform.position = Vec3(value);

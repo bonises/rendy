@@ -2,6 +2,7 @@
 
 // Scene internals: flat node array (SoA-ish), CPU material/light mirrors.
 
+#include "scene/animation_sampler.hpp"
 #include "scene/mesh_store.hpp"
 #include "rendy/scene/light.hpp"
 #include "rendy/scene/material.hpp"
@@ -45,21 +46,10 @@ struct SceneNode {
 
 // ------------------------------------------------------------- animation
 
-struct AnimationChannel {
-    enum class Path : uint8_t { Translation, Rotation, Scale };
-    enum class Interpolation : uint8_t { Step, Linear, CubicSpline };
-    uint32_t node = UINT32_MAX; // scene node index
-    Path path = Path::Translation;
-    Interpolation interpolation = Interpolation::Linear;
-    std::vector<float> times;
-    // vec3 payloads in xyz; rotations as quaternion xyzw. CubicSpline stores
-    // triples per keyframe: inTangent, value, outTangent.
-    std::vector<Vec4> values;
-};
-
 struct SceneAnimation {
     std::string name;
-    float duration = 0.0f;
+    float startTime = 0.0f; ///< first keyframe (clips need not start at 0)
+    float duration = 0.0f;  ///< endTime - startTime
     std::vector<AnimationChannel> channels;
     // playback state
     bool playing = false;
