@@ -62,7 +62,7 @@ colors, `transparent`.
 Unknown properties log one warning and are ignored — a stylesheet never
 fails to load because of them. Text inside elements word-wraps to the
 element's width (centered/right-aligned text wraps left-aligned when it
-overflows). Scrollable elements show a subtle scrollbar thumb. Not in v1:
+overflows). Scrollable elements show a draggable scrollbar thumb. Not in v1:
 media queries, `!important`, attribute/sibling selectors,
 transitions/animations.
 
