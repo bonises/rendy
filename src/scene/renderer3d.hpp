@@ -28,6 +28,11 @@ public:
 
     int tonemapper = 0;      ///< 0 neutral, 1 ACES, 2 off
     float exposure = 1.0f;
+    float shadowDistance = 60.0f; ///< directional shadows reach this far
+
+    static constexpr uint32_t kMaxCascades = 4;
+    static constexpr uint32_t kMaxSpotShadows = 8;
+    static constexpr uint32_t kMaxPointShadows = 4;
 
 private:
     struct MappedBuffer {
@@ -72,6 +77,29 @@ private:
     VkPipeline meshPipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout tonemapLayout_ = VK_NULL_HANDLE;
     VkPipeline tonemapPipeline_ = VK_NULL_HANDLE;
+    VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
+
+    // Shadow map storage (fixed size, created up front).
+    struct ShadowArray {
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VkImageView sampleView = VK_NULL_HANDLE;          // array/cube-array view
+        std::vector<VkImageView> layerViews;              // one 2D view per layer
+        uint32_t size = 0;
+        uint32_t layers = 0;
+    };
+    void createShadowArray(ShadowArray* array, uint32_t size, uint32_t layers, bool cube);
+    void destroyShadowArray(ShadowArray* array);
+    void renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array, uint32_t layer,
+                          const Mat4& lightViewProj, SceneImpl& scene,
+                          const std::vector<uint32_t>& transformIndexOfNode);
+
+    ShadowArray cascadeShadows_; // 2048², kMaxCascades layers
+    ShadowArray spotShadows_;    // 1024², kMaxSpotShadows layers
+    ShadowArray pointShadows_;   // 512², kMaxPointShadows cubes
+    VkSampler shadowSampler_ = VK_NULL_HANDLE;      // compare sampler
+    VkSampler pointShadowSampler_ = VK_NULL_HANDLE; // plain sampler (manual compare)
+    bool shadowsInSampleLayout_ = false;
 
     MappedBuffer uboBuffers_[gpu::kFramesInFlight];
     MappedBuffer transformBuffers_[gpu::kFramesInFlight];

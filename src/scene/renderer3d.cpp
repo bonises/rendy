@@ -2,6 +2,7 @@
 
 #include "shaders/mesh_frag_spv.h"
 #include "shaders/mesh_vert_spv.h"
+#include "shaders/shadow_vert_spv.h"
 #include "shaders/tonemap_frag_spv.h"
 #include "shaders/tonemap_vert_spv.h"
 
@@ -15,15 +16,27 @@ struct FrameUbo {
     Mat4 view;
     Mat4 proj;
     Mat4 viewProj;
+    Mat4 cascadeMatrices[Renderer3D::kMaxCascades];
+    Mat4 spotMatrices[Renderer3D::kMaxSpotShadows];
+    Vec4 cascadeSplits;
     Vec4 viewPos;
     Vec4 ambient;
     glm::uvec4 counts;
+    Vec4 pointShadowParams;
 };
 
 struct MeshPush {
     uint32_t transformIndex;
     uint32_t materialIndex;
 };
+
+struct ShadowPush {
+    Mat4 lightViewProj;
+    uint32_t transformIndex;
+    uint32_t pad[3];
+};
+
+constexpr float kPointShadowNear = 0.05f;
 
 struct TonemapPush {
     uint32_t hdrTexture;
@@ -70,28 +83,32 @@ struct FrustumPlanes {
 Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
                        VkFormat swapchainFormat)
     : ctx_(ctx), bindless_(bindless) {
-    // Set 1: UBO + transforms + materials + lights.
-    VkDescriptorSetLayoutBinding bindings[4]{};
+    // Set 1: UBO + transforms + materials + lights + 3 shadow map arrays.
+    VkDescriptorSetLayoutBinding bindings[7]{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     for (uint32_t i = 1; i < 4; ++i)
         bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    for (uint32_t i = 4; i < 7; ++i)
+        bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = 7;
     layoutInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &frameSetLayout_));
 
     VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, gpu::kFramesInFlight},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * gpu::kFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * gpu::kFramesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets = gpu::kFramesInFlight;
-    poolInfo.poolSizeCount = 2;
+    poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
     VK_CHECK(vkCreateDescriptorPool(ctx_.device(), &poolInfo, nullptr, &descriptorPool_));
 
@@ -113,11 +130,78 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     VK_CHECK(vkCreateSampler(ctx_.device(), &samplerInfo, nullptr, &resolveSampler_));
 
+    // Shadow samplers: hardware-compare PCF sampler + a plain one for the
+    // manually compared point cube maps.
+    VkSamplerCreateInfo shadowSamplerInfo = samplerInfo;
+    shadowSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    shadowSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    shadowSamplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    shadowSamplerInfo.compareEnable = VK_TRUE;
+    shadowSamplerInfo.compareOp = VK_COMPARE_OP_LESS;
+    VK_CHECK(vkCreateSampler(ctx_.device(), &shadowSamplerInfo, nullptr, &shadowSampler_));
+    VK_CHECK(vkCreateSampler(ctx_.device(), &samplerInfo, nullptr, &pointShadowSampler_));
+
+    createShadowArray(&cascadeShadows_, 2048, kMaxCascades, false);
+    createShadowArray(&spotShadows_, 1024, kMaxSpotShadows, false);
+    createShadowArray(&pointShadows_, 512, kMaxPointShadows * 6, true);
+
     createPipelines(swapchainFormat);
+}
+
+void Renderer3D::createShadowArray(ShadowArray* array, uint32_t size, uint32_t layers,
+                                   bool cube) {
+    array->size = size;
+    array->layers = layers;
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    if (cube) imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = kDepthFormat;
+    imageInfo.extent = {size, size, 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = layers;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VmaAllocationCreateInfo allocCreate{};
+    allocCreate.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    VK_CHECK(vmaCreateImage(ctx_.allocator(), &imageInfo, &allocCreate, &array->image,
+                            &array->allocation, nullptr));
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = array->image;
+    viewInfo.viewType = cube ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    viewInfo.format = kDepthFormat;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers};
+    VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &array->sampleView));
+
+    array->layerViews.resize(layers);
+    for (uint32_t layer = 0; layer < layers; ++layer) {
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, layer, 1};
+        VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr,
+                                   &array->layerViews[layer]));
+    }
+}
+
+void Renderer3D::destroyShadowArray(ShadowArray* array) {
+    for (VkImageView view : array->layerViews)
+        vkDestroyImageView(ctx_.device(), view, nullptr);
+    array->layerViews.clear();
+    if (array->sampleView) vkDestroyImageView(ctx_.device(), array->sampleView, nullptr);
+    if (array->image) vmaDestroyImage(ctx_.allocator(), array->image, array->allocation);
+    *array = {};
 }
 
 Renderer3D::~Renderer3D() {
     destroyTargets();
+    destroyShadowArray(&cascadeShadows_);
+    destroyShadowArray(&spotShadows_);
+    destroyShadowArray(&pointShadows_);
+    vkDestroySampler(ctx_.device(), shadowSampler_, nullptr);
+    vkDestroySampler(ctx_.device(), pointShadowSampler_, nullptr);
+    vkDestroyPipeline(ctx_.device(), shadowPipeline_, nullptr);
     for (auto& buffer : uboBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     for (auto& buffer : transformBuffers_)
@@ -137,8 +221,9 @@ Renderer3D::~Renderer3D() {
 
 void Renderer3D::createPipelines(VkFormat swapchainFormat) {
     // ---- mesh pipeline layout
+    // Sized for the largest user (ShadowPush); the mesh pass uses 8 bytes.
     VkPushConstantRange meshPush{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                 sizeof(MeshPush)};
+                                 sizeof(ShadowPush)};
     VkDescriptorSetLayout meshSets[] = {bindless_.layout(), frameSetLayout_};
     VkPipelineLayoutCreateInfo meshLayoutInfo{};
     meshLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -286,6 +371,48 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
                                        &tonemapPipeline_));
     vkDestroyShaderModule(ctx_.device(), tonemapVert, nullptr);
     vkDestroyShaderModule(ctx_.device(), tonemapFrag, nullptr);
+
+    // ---- shadow pipeline (depth only, vertex shader only)
+    VkShaderModule shadowVert =
+        createModule(ctx_.device(), shadow_vert_spv, shadow_vert_spv_words);
+    VkPipelineShaderStageCreateInfo shadowStage{};
+    shadowStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shadowStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    shadowStage.module = shadowVert;
+    shadowStage.pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo shadowInput{};
+    shadowInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    shadowInput.vertexBindingDescriptionCount = 1;
+    shadowInput.pVertexBindingDescriptions = &binding;
+    shadowInput.vertexAttributeDescriptionCount = 1; // position only
+    shadowInput.pVertexAttributeDescriptions = attributes;
+
+    VkPipelineRasterizationStateCreateInfo shadowRaster = raster;
+    shadowRaster.cullMode = VK_CULL_MODE_NONE; // no peter-panning surprises
+    shadowRaster.depthBiasEnable = VK_TRUE;
+    shadowRaster.depthBiasConstantFactor = 1.25f;
+    shadowRaster.depthBiasSlopeFactor = 1.75f;
+
+    VkPipelineColorBlendStateCreateInfo noColor{};
+    noColor.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+
+    VkPipelineRenderingCreateInfo shadowRendering{};
+    shadowRendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    shadowRendering.depthAttachmentFormat = kDepthFormat;
+
+    pipelineInfo.pNext = &shadowRendering;
+    pipelineInfo.stageCount = 1;
+    pipelineInfo.pStages = &shadowStage;
+    pipelineInfo.pVertexInputState = &shadowInput;
+    pipelineInfo.pRasterizationState = &shadowRaster;
+    pipelineInfo.pMultisampleState = &singleSample;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &noColor;
+    pipelineInfo.layout = meshLayout_;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                       &shadowPipeline_));
+    vkDestroyShaderModule(ctx_.device(), shadowVert, nullptr);
 }
 
 void Renderer3D::destroyTargets() {
@@ -384,18 +511,68 @@ void Renderer3D::updateDescriptors(uint32_t slot) {
         {materialBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
         {lightBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
     };
-    VkWriteDescriptorSet writes[4]{};
-    for (uint32_t i = 0; i < 4; ++i) {
+    VkDescriptorImageInfo imageInfos[3] = {
+        {shadowSampler_, cascadeShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+        {shadowSampler_, spotShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+        {pointShadowSampler_, pointShadows_.sampleView,
+         VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+    };
+    VkWriteDescriptorSet writes[7]{};
+    for (uint32_t i = 0; i < 7; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = frameSets_[slot];
         writes[i].dstBinding = i;
         writes[i].descriptorCount = 1;
-        writes[i].descriptorType =
-            i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[i].pBufferInfo = &bufferInfos[i];
+        if (i < 4) {
+            writes[i].descriptorType =
+                i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &bufferInfos[i];
+        } else {
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].pImageInfo = &imageInfos[i - 4];
+        }
     }
-    vkUpdateDescriptorSets(ctx_.device(), 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 7, writes, 0, nullptr);
     descriptorsDirty_[slot] = false;
+}
+
+void Renderer3D::renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array, uint32_t layer,
+                                  const Mat4& lightViewProj, SceneImpl& scene,
+                                  const std::vector<uint32_t>& transformIndexOfNode) {
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = array.layerViews[layer];
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = {{0, 0}, {array.size, array.size}};
+    renderingInfo.layerCount = 1;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+    vkCmdBeginRendering(cmd, &renderingInfo);
+
+    const VkViewport viewport{0.0f, 0.0f, static_cast<float>(array.size),
+                              static_cast<float>(array.size), 0.0f, 1.0f};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    const VkRect2D scissor{{0, 0}, {array.size, array.size}};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
+        const SceneNode& node = scene.nodes[i];
+        if (!node.alive || !node.mesh.valid()) continue;
+        ShadowPush push{};
+        push.lightViewProj = lightViewProj;
+        push.transformIndex = transformIndexOfNode[i];
+        vkCmdPushConstants(cmd, meshLayout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(push), &push);
+        const MeshRange& range = scene.meshes->range(node.mesh);
+        vkCmdDrawIndexed(cmd, range.indexCount, 1, range.firstIndex, range.vertexOffset, 0);
+    }
+    vkCmdEndRendering(cmd);
 }
 
 void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
@@ -417,6 +594,8 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
 
     const FrustumPlanes frustum(ubo.viewProj);
 
+    // Transforms for every alive mesh node (shadow passes see off-screen
+    // casters); the main pass draws the frustum-culled subset.
     struct DrawItem {
         uint32_t transformIndex;
         uint32_t materialIndex;
@@ -424,9 +603,14 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     };
     std::vector<Mat4> transforms;
     std::vector<DrawItem> draws;
+    std::vector<uint32_t> transformIndexOfNode(scene.nodes.size(), 0);
     transforms.reserve(scene.nodes.size());
-    for (const SceneNode& node : scene.nodes) {
+    for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
+        const SceneNode& node = scene.nodes[i];
         if (!node.alive || !node.mesh.valid()) continue;
+        transformIndexOfNode[i] = static_cast<uint32_t>(transforms.size());
+        transforms.push_back(node.world);
+
         const MeshRange& range = scene.meshes->range(node.mesh);
         const Vec3 worldCenter = Vec3(node.world * Vec4{range.boundsCenter, 1.0f});
         const Vec3 scale{glm::length(Vec3(node.world[0])), glm::length(Vec3(node.world[1])),
@@ -434,12 +618,26 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         const float worldRadius =
             range.boundsRadius * std::max(scale.x, std::max(scale.y, scale.z));
         if (!frustum.visible(worldCenter, worldRadius)) continue;
-        draws.push_back({static_cast<uint32_t>(transforms.size()), node.material.id, node.mesh});
-        transforms.push_back(node.world);
+        draws.push_back({transformIndexOfNode[i], node.material.id, node.mesh});
     }
 
-    // ---- lights
+    // ---- lights + shadow assignment
+    struct SpotShadowJob {
+        uint32_t layer;
+        Mat4 matrix;
+    };
+    struct PointShadowJob {
+        uint32_t cubeIndex;
+        Vec3 position;
+        float range;
+    };
     std::vector<GpuLight> gpuLights;
+    std::vector<SpotShadowJob> spotJobs;
+    std::vector<PointShadowJob> pointJobs;
+    Vec3 sunDirection{0.0f, -1.0f, 0.0f};
+    bool haveSun = false;
+    uint32_t spotShadowCount = 0;
+    uint32_t pointShadowCount = 0;
     gpuLights.reserve(scene.lights.size());
     for (size_t i = 0; i < scene.lights.size(); ++i) {
         const Light& light = scene.lights[i];
@@ -456,11 +654,103 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         gpuLight.colorIntensity =
             Vec4{light.color.r, light.color.g, light.color.b, light.intensity};
         gpuLight.directionRange = Vec4{worldDir, light.range};
+
+        float shadowIndex = -1.0f;
+        if (light.castsShadows) {
+            switch (light.type) {
+            case Light::Type::Directional:
+                if (!haveSun) { // one shadowed sun in v1
+                    haveSun = true;
+                    sunDirection = worldDir;
+                    shadowIndex = 0.0f;
+                }
+                break;
+            case Light::Type::Spot:
+                if (spotShadowCount < kMaxSpotShadows) {
+                    const float range = light.range > 0.0f ? light.range : 50.0f;
+                    const Mat4 proj = glm::perspective(2.0f * light.outerCone, 1.0f, 0.1f, range);
+                    const Vec3 up = std::abs(worldDir.y) > 0.99f ? Vec3{1.0f, 0.0f, 0.0f}
+                                                                 : Vec3{0.0f, 1.0f, 0.0f};
+                    const Mat4 matrix =
+                        proj * glm::lookAt(worldPos, worldPos + worldDir, up);
+                    ubo.spotMatrices[spotShadowCount] = matrix;
+                    spotJobs.push_back({spotShadowCount, matrix});
+                    shadowIndex = static_cast<float>(spotShadowCount++);
+                }
+                break;
+            case Light::Type::Point:
+                if (pointShadowCount < kMaxPointShadows) {
+                    pointJobs.push_back({pointShadowCount, worldPos,
+                                         light.range > 0.0f ? light.range : 50.0f});
+                    shadowIndex = static_cast<float>(pointShadowCount++);
+                }
+                break;
+            }
+        }
         gpuLight.cone =
-            Vec4{std::cos(light.innerCone), std::cos(light.outerCone), -1.0f, 0.0f};
+            Vec4{std::cos(light.innerCone), std::cos(light.outerCone), shadowIndex, 0.0f};
         gpuLights.push_back(gpuLight);
     }
     ubo.counts.x = static_cast<uint32_t>(gpuLights.size());
+    ubo.pointShadowParams.x = kPointShadowNear;
+
+    // ---- cascaded shadow matrices for the sun
+    if (haveSun) {
+        ubo.counts.y = kMaxCascades;
+        const float nearPlane = camera.nearPlane;
+        const float farPlane = std::min(camera.farPlane, shadowDistance);
+        const float tanHalfFov = std::tan(camera.fovY * 0.5f);
+        const Mat4 invView = glm::inverse(ubo.view);
+
+        float splitNear = nearPlane;
+        for (uint32_t cascade = 0; cascade < kMaxCascades; ++cascade) {
+            // Practical split scheme (λ = 0.75).
+            const float p = static_cast<float>(cascade + 1) / kMaxCascades;
+            const float logSplit = nearPlane * std::pow(farPlane / nearPlane, p);
+            const float uniformSplit = nearPlane + (farPlane - nearPlane) * p;
+            const float splitFar = glm::mix(uniformSplit, logSplit, 0.75f);
+
+            // Sphere-fit the sub-frustum (stable under rotation).
+            Vec3 corners[8];
+            int cornerIndex = 0;
+            for (float depth : {splitNear, splitFar}) {
+                const float y = depth * tanHalfFov;
+                const float x = y * aspect;
+                for (const Vec2 sign : {Vec2{-1, -1}, Vec2{1, -1}, Vec2{-1, 1}, Vec2{1, 1}})
+                    corners[cornerIndex++] =
+                        Vec3(invView * Vec4{sign.x * x, sign.y * y, -depth, 1.0f});
+            }
+            Vec3 center{0.0f};
+            for (const Vec3& corner : corners) center += corner;
+            center /= 8.0f;
+            float radius = 0.0f;
+            for (const Vec3& corner : corners)
+                radius = std::max(radius, glm::length(corner - center));
+            radius = std::ceil(radius * 16.0f) / 16.0f;
+
+            const Vec3 up = std::abs(sunDirection.y) > 0.99f ? Vec3{1.0f, 0.0f, 0.0f}
+                                                             : Vec3{0.0f, 1.0f, 0.0f};
+            const float zPadding = 40.0f; // room for casters behind the frustum
+            const Mat4 lightView =
+                glm::lookAt(center - sunDirection * (radius + zPadding), center, up);
+            const Mat4 lightProj =
+                glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius + zPadding);
+            Mat4 lightViewProj = lightProj * lightView;
+
+            // Texel snap: keep the origin on the shadow texel grid.
+            const float mapSize = static_cast<float>(cascadeShadows_.size);
+            Vec4 origin = lightViewProj * Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+            origin *= mapSize / 2.0f;
+            const Vec4 rounded = glm::round(origin);
+            Vec4 offset = (rounded - origin) * 2.0f / mapSize;
+            lightViewProj[3].x += offset.x;
+            lightViewProj[3].y += offset.y;
+
+            ubo.cascadeMatrices[cascade] = lightViewProj;
+            ubo.cascadeSplits[static_cast<int>(cascade)] = splitFar;
+            splitNear = splitFar;
+        }
+    }
 
     // ---- upload per-frame data
     ensureCapacity(uboBuffers_[slot], sizeof(FrameUbo), slot, frames);
@@ -483,6 +773,67 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         std::memcpy(lightBuffers_[slot].mapped, gpuLights.data(),
                     gpuLights.size() * sizeof(GpuLight));
     if (descriptorsDirty_[slot]) updateDescriptors(slot);
+
+    // ---- shadow passes
+    const bool anyShadows = haveSun || !spotJobs.empty() || !pointJobs.empty();
+    for (ShadowArray* array : {&cascadeShadows_, &spotShadows_, &pointShadows_}) {
+        gpu::imageBarrier(cmd, array->image,
+                          shadowsInSampleLayout_ ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
+                                                 : VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+                          VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                          VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
+
+    if (anyShadows) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
+        const VkDescriptorSet shadowSets[] = {bindless_.set(), frameSets_[slot]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshLayout_, 0, 2,
+                                shadowSets, 0, nullptr);
+        const VkDeviceSize zeroOffset = 0;
+        VkBuffer vertexBuffer = scene.meshes->vertexBuffer();
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &zeroOffset);
+        vkCmdBindIndexBuffer(cmd, scene.meshes->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+
+        if (haveSun)
+            for (uint32_t cascade = 0; cascade < kMaxCascades; ++cascade)
+                renderShadowPass(cmd, cascadeShadows_, cascade, ubo.cascadeMatrices[cascade],
+                                 scene, transformIndexOfNode);
+        for (const SpotShadowJob& job : spotJobs)
+            renderShadowPass(cmd, spotShadows_, job.layer, job.matrix, scene,
+                             transformIndexOfNode);
+        for (const PointShadowJob& job : pointJobs) {
+            const Mat4 proj =
+                glm::perspective(glm::radians(90.0f), 1.0f, kPointShadowNear, job.range);
+            const struct {
+                Vec3 dir;
+                Vec3 up;
+            } faces[6] = {
+                {{1, 0, 0}, {0, -1, 0}},  {{-1, 0, 0}, {0, -1, 0}}, {{0, 1, 0}, {0, 0, 1}},
+                {{0, -1, 0}, {0, 0, -1}}, {{0, 0, 1}, {0, -1, 0}},  {{0, 0, -1}, {0, -1, 0}},
+            };
+            for (uint32_t face = 0; face < 6; ++face) {
+                const Mat4 view =
+                    glm::lookAt(job.position, job.position + faces[face].dir, faces[face].up);
+                renderShadowPass(cmd, pointShadows_, job.cubeIndex * 6 + face, proj * view,
+                                 scene, transformIndexOfNode);
+            }
+        }
+    }
+
+    for (ShadowArray* array : {&cascadeShadows_, &spotShadows_, &pointShadows_}) {
+        gpu::imageBarrier(cmd, array->image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
+    shadowsInSampleLayout_ = true;
 
     // ---- scene pass (HDR MSAA + depth, resolve at end)
     gpu::imageBarrier(cmd, hdrMsaa_.image, VK_IMAGE_LAYOUT_UNDEFINED,

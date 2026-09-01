@@ -48,6 +48,7 @@ rendy_compile_shaders(rendy
   shaders/quad2d.frag
   shaders/mesh.vert
   shaders/mesh.frag
+  shaders/shadow.vert
   shaders/tonemap.vert
   shaders/tonemap.frag
 )

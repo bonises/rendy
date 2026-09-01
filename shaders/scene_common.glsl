@@ -19,13 +19,20 @@ struct LightData {
     vec4 cone;           // x cos(inner), y cos(outer), z shadowIndex (-1 none), w unused
 };
 
+const uint MAX_CASCADES = 4u;
+const uint MAX_SPOT_SHADOWS = 8u;
+
 layout(set = 1, binding = 0) uniform FrameData {
     mat4 view;
     mat4 proj;
     mat4 viewProj;
+    mat4 cascadeMatrices[MAX_CASCADES];
+    mat4 spotMatrices[MAX_SPOT_SHADOWS];
+    vec4 cascadeSplits; // view-space split depths (positive)
     vec4 viewPos;       // xyz camera position
     vec4 ambient;       // rgb ambient light
-    uvec4 counts;       // x = light count
+    uvec4 counts;       // x = light count, y = active cascades
+    vec4 pointShadowParams; // x = near plane used for point shadow projs
 } frame;
 
 layout(std430, set = 1, binding = 1) readonly buffer Transforms { mat4 transforms[]; };

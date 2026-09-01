@@ -182,6 +182,7 @@ Result<std::unique_ptr<Context>> Context::create(const ContextConfig& config) {
     features2.pNext = &features12;
     features2.features.samplerAnisotropy = VK_TRUE;
     features2.features.independentBlend = VK_TRUE;
+    features2.features.imageCubeArray = VK_TRUE; // point light shadow cubes
 
     const char* deviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 

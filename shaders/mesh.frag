@@ -6,6 +6,10 @@
 
 layout(set = 0, binding = 0) uniform sampler2D textures[];
 
+layout(set = 1, binding = 4) uniform sampler2DArrayShadow cascadeShadowMaps;
+layout(set = 1, binding = 5) uniform sampler2DArrayShadow spotShadowMaps;
+layout(set = 1, binding = 6) uniform samplerCubeArray pointShadowMaps;
+
 layout(push_constant) uniform PC {
     uint transformIndex;
     uint materialIndex;
@@ -43,6 +47,64 @@ float visibilitySmith(float NoV, float NoL, float roughness) {
 vec3 sampleOrWhite(uint index, vec2 uv) {
     if (index == 0u) return vec3(1.0);
     return texture(textures[nonuniformEXT(index)], uv).rgb;
+}
+
+// ------------------------------------------------------------------ shadows
+
+// 3x3 PCF on an array shadow map (hardware compare per tap).
+float pcfArray(sampler2DArrayShadow map, vec3 uvw, float depthRef) {
+    const vec2 texel = 1.0 / vec2(textureSize(map, 0).xy);
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+            sum += texture(map, vec4(uvw.xy + vec2(x, y) * texel, uvw.z, depthRef));
+    return sum / 9.0;
+}
+
+// 1 = fully lit, 0 = fully shadowed.
+float directionalShadow(vec3 worldPos, float NoL) {
+    const uint cascadeCount = frame.counts.y;
+    if (cascadeCount == 0u) return 1.0;
+
+    // Pick cascade from view depth.
+    const float viewDepth = -(frame.view * vec4(worldPos, 1.0)).z;
+    uint cascade = cascadeCount - 1u;
+    for (uint i = 0u; i < cascadeCount; ++i) {
+        if (viewDepth < frame.cascadeSplits[i]) {
+            cascade = i;
+            break;
+        }
+    }
+
+    const vec4 lightClip = frame.cascadeMatrices[cascade] * vec4(worldPos, 1.0);
+    vec3 ndc = lightClip.xyz / lightClip.w;
+    const vec2 uv = ndc.xy * 0.5 + 0.5;
+    if (ndc.z <= 0.0 || ndc.z >= 1.0) return 1.0;
+
+    const float bias = max(0.0015 * (1.0 - NoL), 0.0004) * (1.0 + float(cascade));
+    return pcfArray(cascadeShadowMaps, vec3(uv, float(cascade)), ndc.z - bias);
+}
+
+float spotShadow(uint shadowIndex, vec3 worldPos, float NoL) {
+    const vec4 lightClip = frame.spotMatrices[shadowIndex] * vec4(worldPos, 1.0);
+    if (lightClip.w <= 0.0) return 1.0;
+    vec3 ndc = lightClip.xyz / lightClip.w;
+    const vec2 uv = ndc.xy * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;
+    const float bias = max(0.002 * (1.0 - NoL), 0.0005);
+    return pcfArray(spotShadowMaps, vec3(uv, float(shadowIndex)), ndc.z - bias);
+}
+
+float pointShadow(uint shadowIndex, vec3 worldPos, vec3 lightPos, float range) {
+    const vec3 toFrag = worldPos - lightPos;
+    const float dist = max(max(abs(toFrag.x), abs(toFrag.y)), abs(toFrag.z));
+    const float nearPlane = frame.pointShadowParams.x;
+    const float farPlane = max(range, 1.0);
+    // Depth the cube map stored for this fragment (standard 0..1 projection).
+    const float depthRef =
+        farPlane / (farPlane - nearPlane) * (1.0 - nearPlane / max(dist, nearPlane));
+    const float stored = texture(pointShadowMaps, vec4(toFrag, float(shadowIndex))).r;
+    return stored + 0.002 >= depthRef ? 1.0 : 0.0;
 }
 
 void main() {
@@ -122,6 +184,20 @@ void main() {
 
         const float NoL = max(dot(shadingNormal, lightDir), 0.0);
         if (NoL <= 0.0 || attenuation <= 0.0) continue;
+
+        const float shadowIndex = light.cone.z;
+        if (shadowIndex >= 0.0) {
+            float shadow = 1.0;
+            if (type == LIGHT_DIRECTIONAL)
+                shadow = directionalShadow(vWorldPos, NoL);
+            else if (type == LIGHT_SPOT)
+                shadow = spotShadow(uint(shadowIndex), vWorldPos, NoL);
+            else
+                shadow = pointShadow(uint(shadowIndex), vWorldPos, light.positionType.xyz,
+                                     light.directionRange.w);
+            attenuation *= shadow;
+            if (attenuation <= 0.0) continue;
+        }
 
         const vec3 halfway = normalize(viewDir + lightDir);
         const float NoH = max(dot(shadingNormal, halfway), 0.0);
