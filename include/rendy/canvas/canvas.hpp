@@ -53,6 +53,13 @@ public:
     Vec2 drawText(std::string_view text, Vec2 pos, const DrawTextOptions& options = {});
     /// Size drawText would occupy, without drawing.
     Vec2 measureText(std::string_view text, const DrawTextOptions& options = {});
+
+    /// Like drawText but word-wraps at `maxWidth` px (falls back to breaking
+    /// inside words that don't fit alone on a line).
+    Vec2 drawTextWrapped(std::string_view text, Vec2 pos, float maxWidth,
+                         const DrawTextOptions& options = {});
+    Vec2 measureTextWrapped(std::string_view text, float maxWidth,
+                            const DrawTextOptions& options = {});
     /// Vertical metrics for a font at a size (ascent/descent/lineHeight).
     TextMetrics textMetrics(const DrawTextOptions& options = {});
 

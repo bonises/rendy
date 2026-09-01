@@ -60,9 +60,11 @@ CSS allows; colors as `#rgb #rrggbb #rrggbbaa`, `rgb()/rgba()`, ~20 named
 colors, `transparent`.
 
 Unknown properties log one warning and are ignored — a stylesheet never
-fails to load because of them. Not in v1: media queries, `!important`,
-attribute/sibling selectors, transitions/animations, text wrapping inside
-elements.
+fails to load because of them. Text inside elements word-wraps to the
+element's width (centered/right-aligned text wraps left-aligned when it
+overflows). Scrollable elements show a subtle scrollbar thumb. Not in v1:
+media queries, `!important`, attribute/sibling selectors,
+transitions/animations.
 
 Defaults differ from the browser where it helps UIs: every element is
 `display: flex; flex-direction: column; align-items: stretch`, so vertical

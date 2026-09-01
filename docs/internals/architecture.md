@@ -122,7 +122,8 @@ Compile errors log and keep the old pipeline.
 
 SDL3 audio stream (48 kHz float stereo) pulls from a 32-voice mixer in the
 audio callback. Sounds are fully decoded/resampled at load (dr_wav,
-stb_vorbis). Voice control is atomics-only — no locks on the audio thread;
+stb_vorbis). Per-voice parameters are relaxed atomics; voice claim/free
+(`play`, `unload`) briefly takes SDL's stream lock to exclude the callback.
 `generation` counters make stale VoiceRefs harmless.
 
 ## Conventions worth keeping

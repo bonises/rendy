@@ -239,10 +239,13 @@ struct ContextImpl {
         const FontRef font = self->resolveFont(node->style.fontFamily);
         if (glyphs == nullptr || !glyphs->hasFont(font.id)) return {0.0f, 0.0f};
 
-        // No wrapping in v1: measure the natural size.
         Canvas canvas = self->app->canvas();
-        const Vec2 size = canvas.measureText(
-            node->text, {.font = font, .size = node->style.fontSize});
+        const DrawTextOptions options{.font = font, .size = node->style.fontSize};
+        Vec2 size;
+        if (widthMode == YGMeasureModeUndefined || width <= 0.0f || std::isnan(width))
+            size = canvas.measureText(node->text, options);
+        else
+            size = canvas.measureTextWrapped(node->text, width, options);
         float w = size.x;
         if (widthMode == YGMeasureModeAtMost) w = std::min(w, width);
         float h = size.y;
@@ -321,16 +324,39 @@ struct ContextImpl {
             const float padTop = YGNodeLayoutGetPadding(node->yoga, YGEdgeTop);
             const float padRight = YGNodeLayoutGetPadding(node->yoga, YGEdgeRight);
             Vec2 pos = node->rect.pos + Vec2{padLeft, padTop};
+            const float avail = node->rect.size.x - padLeft - padRight;
             if (s.textAlign != TextAlign::Left) {
-                const float avail = node->rect.size.x - padLeft - padRight;
+                // Center/right: single-line placement (wrap falls back left).
                 const float textWidth = canvas.measureText(node->text, options).x;
-                if (s.textAlign == TextAlign::Center) pos.x += (avail - textWidth) * 0.5f;
-                if (s.textAlign == TextAlign::Right) pos.x += avail - textWidth;
+                if (textWidth <= avail + 0.5f) {
+                    if (s.textAlign == TextAlign::Center) pos.x += (avail - textWidth) * 0.5f;
+                    if (s.textAlign == TextAlign::Right) pos.x += avail - textWidth;
+                    canvas.drawText(node->text, pos, options);
+                } else {
+                    canvas.drawTextWrapped(node->text, pos, avail, options);
+                }
+            } else {
+                canvas.drawTextWrapped(node->text, pos, avail, options);
             }
-            canvas.drawText(node->text, pos, options);
         }
 
         for (auto& child : node->children) paintNode(child.get(), canvas, opacity);
+
+        // Scrollbar thumb for scrollable overflow.
+        if (s.overflow == Overflow::Scroll &&
+            node->contentSize.y > node->rect.size.y + 0.5f) {
+            const float trackHeight = node->rect.size.y - 4.0f;
+            const float thumbHeight = std::max(
+                24.0f, trackHeight * node->rect.size.y / node->contentSize.y);
+            const float maxScroll = node->contentSize.y - node->rect.size.y;
+            const float t =
+                maxScroll > 0.0f ? std::clamp(node->scrollOffset.y / maxScroll, 0.0f, 1.0f)
+                                 : 0.0f;
+            const float thumbY = node->rect.top() + 2.0f + t * (trackHeight - thumbHeight);
+            canvas.drawRect({{node->rect.right() - 8.0f, thumbY}, {5.0f, thumbHeight}},
+                            {.color = s.textColor.fade(0.25f * opacity),
+                             .cornerRadius = 2.5f});
+        }
 
         if (clips) canvas.popClip();
     }

@@ -105,6 +105,107 @@ Vec2 Canvas::measureText(std::string_view str, const DrawTextOptions& options) {
                       [](const text::GlyphInfo&, float, float) {});
 }
 
+namespace {
+
+// Greedy word wrap; a word longer than maxWidth breaks inside itself.
+// `measure` measures a substring's width; `emit` receives each line.
+template <typename Measure, typename Emit>
+void wrapLines(std::string_view str, float maxWidth, Measure&& measure, Emit&& emit) {
+    size_t paragraphStart = 0;
+    while (paragraphStart <= str.size()) {
+        size_t newline = str.find('\n', paragraphStart);
+        const std::string_view paragraph =
+            str.substr(paragraphStart,
+                       (newline == std::string_view::npos ? str.size() : newline) -
+                           paragraphStart);
+
+        if (paragraph.empty()) {
+            emit(std::string_view{});
+        } else {
+            size_t lineStart = 0;
+            while (lineStart < paragraph.size()) {
+                // Extend the line word by word while it fits.
+                size_t lineEnd = lineStart;
+                size_t cursor = lineStart;
+                while (cursor <= paragraph.size()) {
+                    size_t wordEnd = paragraph.find(' ', cursor);
+                    if (wordEnd == std::string_view::npos) wordEnd = paragraph.size();
+                    const auto candidate = paragraph.substr(lineStart, wordEnd - lineStart);
+                    if (lineEnd == lineStart || measure(candidate) <= maxWidth) {
+                        lineEnd = wordEnd;
+                        cursor = wordEnd + 1;
+                        if (wordEnd == paragraph.size()) break;
+                    } else {
+                        break;
+                    }
+                }
+
+                auto line = paragraph.substr(lineStart, lineEnd - lineStart);
+                if (measure(line) > maxWidth) {
+                    // Single oversized word: break at codepoints (min 1).
+                    size_t offset = 0;
+                    size_t fit = 0;
+                    while (offset < line.size()) {
+                        const size_t prev = offset;
+                        text::decodeUtf8(line, offset);
+                        if (fit > 0 && measure(line.substr(0, offset)) > maxWidth) {
+                            offset = prev;
+                            break;
+                        }
+                        fit++;
+                    }
+                    line = line.substr(0, offset);
+                    lineEnd = lineStart + offset;
+                    emit(line);
+                    lineStart = lineEnd; // no space to skip mid-word
+                } else {
+                    emit(line);
+                    lineStart = lineEnd + 1; // skip the breaking space
+                }
+            }
+        }
+
+        if (newline == std::string_view::npos) break;
+        paragraphStart = newline + 1;
+    }
+}
+
+} // namespace
+
+Vec2 Canvas::drawTextWrapped(std::string_view str, Vec2 pos, float maxWidth,
+                             const DrawTextOptions& options) {
+    text::GlyphCache* cache = data_->glyphCache;
+    if (cache == nullptr || !cache->hasFont(options.font.id)) return {0.0f, 0.0f};
+    const float lineHeight = cache->metrics(options.font.id, options.size).lineHeight;
+    float y = pos.y;
+    float widest = 0.0f;
+    wrapLines(
+        str, maxWidth,
+        [&](std::string_view piece) { return measureText(piece, options).x; },
+        [&](std::string_view line) {
+            widest = std::max(widest, drawText(line, {pos.x, y}, options).x);
+            y += lineHeight;
+        });
+    return {widest, y - pos.y};
+}
+
+Vec2 Canvas::measureTextWrapped(std::string_view str, float maxWidth,
+                                const DrawTextOptions& options) {
+    text::GlyphCache* cache = data_->glyphCache;
+    if (cache == nullptr || !cache->hasFont(options.font.id)) return {0.0f, 0.0f};
+    const float lineHeight = cache->metrics(options.font.id, options.size).lineHeight;
+    float height = 0.0f;
+    float widest = 0.0f;
+    wrapLines(
+        str, maxWidth,
+        [&](std::string_view piece) { return measureText(piece, options).x; },
+        [&](std::string_view line) {
+            widest = std::max(widest, measureText(line, options).x);
+            height += lineHeight;
+        });
+    return {widest, height};
+}
+
 TextMetrics Canvas::textMetrics(const DrawTextOptions& options) {
     text::GlyphCache* cache = data_->glyphCache;
     if (cache == nullptr || !cache->hasFont(options.font.id)) return {};

@@ -11,6 +11,8 @@ order = paint order. Everything batches into one instanced draw.
 | `drawImage` | `void drawImage(TextureRef, const Rect&, const DrawImageOptions& = {})` |
 | `drawText` | `Vec2 drawText(std::string_view, Vec2 topLeft, const DrawTextOptions& = {})` |
 | `measureText` | `Vec2 measureText(std::string_view, const DrawTextOptions& = {})` |
+| `drawTextWrapped` | `Vec2 drawTextWrapped(text, Vec2 topLeft, float maxWidth, options)` — greedy word wrap |
+| `measureTextWrapped` | `Vec2 measureTextWrapped(text, float maxWidth, options)` |
 | `textMetrics` | `TextMetrics textMetrics(const DrawTextOptions& = {})` |
 | `pushClip` / `popClip` | intersecting clip stack, shader-side |
 | `size` | `Vec2 size() const` |
