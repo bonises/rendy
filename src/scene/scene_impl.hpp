@@ -42,6 +42,7 @@ struct SceneNode {
     MaterialHandle material;
     int32_t lightIndex = -1; // into lights
     int32_t skinIndex = -1;  // into skins; >= 0 = skinned mesh
+    std::vector<float> morphWeights; // per morph target (empty = all zero)
     bool alive = true;
 };
 

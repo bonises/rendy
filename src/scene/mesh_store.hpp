@@ -18,6 +18,17 @@ struct MeshRange {
     int32_t vertexOffset = 0;
     Vec3 boundsCenter{0.0f};
     float boundsRadius = 0.0f;
+    // Morph targets: entry offset into the delta buffer (per target, per
+    // vertex), UINT32_MAX = none.
+    uint32_t morphDeltaBase = UINT32_MAX;
+    uint32_t morphTargetCount = 0;
+    uint32_t vertexCount = 0;
+};
+
+// GPU layout of one morph delta (std430).
+struct MorphDelta {
+    Vec4 position; // xyz used
+    Vec4 normal;
 };
 
 class MeshStore {
@@ -35,6 +46,8 @@ public:
 
     VkBuffer vertexBuffer() const { return vertexBuffer_; }
     VkBuffer indexBuffer() const { return indexBuffer_; }
+    /// Valid buffer even when no mesh has morphs (1-entry dummy).
+    VkBuffer morphDeltaBuffer() const { return morphBuffer_; }
 
 private:
     void ensureRoom(size_t vertexBytes, size_t indexBytes);
@@ -45,10 +58,14 @@ private:
     VmaAllocation vertexAllocation_ = VK_NULL_HANDLE;
     VkBuffer indexBuffer_ = VK_NULL_HANDLE;
     VmaAllocation indexAllocation_ = VK_NULL_HANDLE;
+    VkBuffer morphBuffer_ = VK_NULL_HANDLE;
+    VmaAllocation morphAllocation_ = VK_NULL_HANDLE;
     size_t vertexCapacity_ = 0;
     size_t indexCapacity_ = 0;
+    size_t morphCapacity_ = 0;
     uint32_t vertexCount_ = 0;
     uint32_t indexCount_ = 0;
+    uint32_t morphEntryCount_ = 0;
     std::vector<MeshRange> ranges_;
 };
 

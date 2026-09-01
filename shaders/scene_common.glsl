@@ -41,7 +41,27 @@ layout(std430, set = 1, binding = 2) readonly buffer Materials { Material materi
 layout(std430, set = 1, binding = 3) readonly buffer Lights { LightData lights[]; };
 layout(std430, set = 1, binding = 7) readonly buffer Joints { mat4 jointMatrices[]; };
 
+struct MorphDelta {
+    vec4 position;
+    vec4 normal;
+};
+layout(std430, set = 1, binding = 12) readonly buffer MorphDeltas { MorphDelta morphDeltas[]; };
+layout(std430, set = 1, binding = 13) readonly buffer MorphWeights { float morphWeights[]; };
+
 const uint NO_JOINTS = 0xFFFFFFFFu;
+
+// Applies morph target deltas (before skinning, per glTF). localVertex is
+// the vertex index within its own mesh.
+void rendyApplyMorphs(uint targetCount, uint weightBase, uint deltaBase, uint vertexCount,
+                      uint localVertex, inout vec3 position, inout vec3 normal) {
+    for (uint t = 0u; t < targetCount; ++t) {
+        const float w = morphWeights[weightBase + t];
+        if (w == 0.0) continue;
+        const MorphDelta delta = morphDeltas[deltaBase + t * vertexCount + localVertex];
+        position += w * delta.position.xyz;
+        normal += w * delta.normal.xyz;
+    }
+}
 
 // Model matrix for a (possibly skinned) vertex. Skinned meshes follow their
 // skeleton and ignore the node transform, per the glTF spec.

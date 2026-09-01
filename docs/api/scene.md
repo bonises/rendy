@@ -19,6 +19,7 @@ see the [3D guide](../guides/3d.md) for concepts.
 | `transform` | `Transform& transform(NodeId)` | |
 | `light` | `Light& light(NodeId)` | for addLight nodes |
 | `setMaterial` | `void setMaterial(NodeId, MaterialHandle)` | |
+| `setMorphWeights` | `void setMorphWeights(NodeId, std::vector<float>)` | shape-key weights |
 | `setAmbient` | `void setAmbient(Color)` | flat ambient (no environment) |
 | `setEnvironment` | `Result<void> setEnvironment(hdrPath, float intensity = 1)` | skybox + IBL from an equirect .hdr |
 | `setEnvironmentIntensity` / `clearEnvironment` | | |

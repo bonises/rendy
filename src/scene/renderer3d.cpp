@@ -36,14 +36,23 @@ struct MeshPush {
     uint32_t transformIndex;
     uint32_t materialIndex;
     uint32_t jointBase; // kNoJoints = unskinned
-    uint32_t pad;
+    uint32_t morphWeightBase;
+    uint32_t morphDeltaBase;
+    uint32_t morphTargetCount; // 0 = no morphs
+    uint32_t meshVertexBase;
+    uint32_t meshVertexCount;
 };
 
 struct ShadowPush {
     Mat4 lightViewProj;
     uint32_t transformIndex;
     uint32_t jointBase;
-    uint32_t pad[2];
+    uint32_t morphWeightBase;
+    uint32_t morphDeltaBase;
+    uint32_t morphTargetCount;
+    uint32_t meshVertexBase;
+    uint32_t meshVertexCount;
+    uint32_t pad;
 };
 
 constexpr float kPointShadowNear = 0.05f;
@@ -94,8 +103,8 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
                        gpu::Uploader& uploader, VkFormat swapchainFormat)
     : ctx_(ctx), bindless_(bindless) {
     // Set 1: UBO + transforms/materials/lights/joints + 3 shadow map arrays
-    // + environment cubes (8,9,10) + BRDF LUT (11).
-    VkDescriptorSetLayoutBinding bindings[12]{};
+    // + environment cubes (8,9,10) + BRDF LUT (11) + morph deltas/weights.
+    VkDescriptorSetLayoutBinding bindings[14]{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     for (uint32_t i = 1; i < 4; ++i)
@@ -109,16 +118,19 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     for (uint32_t i = 8; i < 12; ++i)
         bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                        VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    for (uint32_t i = 12; i < 14; ++i)
+        bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT,
+                       nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 12;
+    layoutInfo.bindingCount = 14;
     layoutInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &frameSetLayout_));
 
     VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, gpu::kFramesInFlight},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * gpu::kFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * gpu::kFramesInFlight},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * gpu::kFramesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
@@ -358,6 +370,8 @@ Renderer3D::~Renderer3D() {
     for (auto& buffer : lightBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     for (auto& buffer : jointBuffers_)
+        if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
+    for (auto& buffer : morphWeightBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     vkDestroySampler(ctx_.device(), resolveSampler_, nullptr);
     vkDestroyImageView(ctx_.device(), defaultEnv_.cubeView, nullptr);
@@ -712,12 +726,14 @@ void Renderer3D::ensureCapacity(MappedBuffer& buffer, size_t bytes, uint32_t slo
 }
 
 void Renderer3D::updateDescriptors(uint32_t slot) {
-    VkDescriptorBufferInfo bufferInfos[5] = {
+    VkDescriptorBufferInfo bufferInfos[7] = {
         {uboBuffers_[slot].buffer, 0, sizeof(FrameUbo)},
         {transformBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
         {materialBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
         {lightBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
         {jointBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
+        {boundMorphDeltaBuffer_, 0, VK_WHOLE_SIZE},
+        {morphWeightBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
     };
     // Environment bindings fall back to the built-in black maps.
     const EnvironmentData* env = boundEnvironment_;
@@ -737,22 +753,23 @@ void Renderer3D::updateDescriptors(uint32_t slot) {
         {envSampler, preView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {envSampler, lutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
-    VkWriteDescriptorSet writes[12]{};
-    for (uint32_t i = 0; i < 12; ++i) {
+    VkWriteDescriptorSet writes[14]{};
+    for (uint32_t i = 0; i < 14; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = frameSets_[slot];
         writes[i].dstBinding = i;
         writes[i].descriptorCount = 1;
-        if (i < 4 || i == 7) {
+        if (i < 4 || i == 7 || i >= 12) {
             writes[i].descriptorType =
                 i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[i].pBufferInfo = &bufferInfos[i == 7 ? 4 : i];
+            writes[i].pBufferInfo =
+                &bufferInfos[i == 7 ? 4 : (i == 12 ? 5 : (i == 13 ? 6 : i))];
         } else {
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[i].pImageInfo = &imageInfos[i < 7 ? i - 4 : i - 5];
         }
     }
-    vkUpdateDescriptorSets(ctx_.device(), 12, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 14, writes, 0, nullptr);
     descriptorsDirty_[slot] = false;
 }
 
@@ -781,14 +798,19 @@ void Renderer3D::renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array,
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     for (const ShadowGroup& group : groups) {
+        const MeshRange& range = scene.meshes->range(group.mesh);
         ShadowPush push{};
         push.lightViewProj = lightViewProj;
         push.transformIndex = group.baseTransform;
         push.jointBase = group.jointBase;
+        push.morphWeightBase = group.morphWeightBase;
+        push.morphDeltaBase = range.morphDeltaBase;
+        push.morphTargetCount = group.morphTargetCount;
+        push.meshVertexBase = static_cast<uint32_t>(range.vertexOffset);
+        push.meshVertexCount = range.vertexCount;
         vkCmdPushConstants(cmd, meshLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(push), &push);
-        const MeshRange& range = scene.meshes->range(group.mesh);
         vkCmdDrawIndexed(cmd, range.indexCount, group.instances, range.firstIndex,
                          range.vertexOffset, 0);
     }
@@ -833,6 +855,8 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         float viewDepth;     // blend sorting
         uint32_t instances;  // opaque groups
         uint32_t jointBase = kNoJoints;
+        uint32_t morphWeightBase = 0;
+        uint32_t morphTargetCount = 0;
     };
     std::vector<Mat4> transforms;
     std::vector<DrawItem> blendDraws;
@@ -844,6 +868,7 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     std::vector<DrawItem> skinnedDraws;
     std::vector<ShadowGroup> skinnedShadowDraws;
     std::vector<Mat4> jointMatrices;
+    std::vector<float> frameMorphWeights;
     // Caching per skinIndex is correct even when several mesh nodes share a
     // skin: per the glTF spec the skinned mesh node's own transform MUST be
     // ignored, so every user of a skin gets the identical world-space pose
@@ -872,19 +897,38 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         const bool blends = node.material.id < scene.materialAlphaModes.size() &&
                             scene.materialAlphaModes[node.material.id] == AlphaMode::Blend;
 
-        if (node.skinIndex >= 0 &&
-            static_cast<size_t>(node.skinIndex) < scene.skins.size()) {
-            // Skinned: joints define the pose, no instancing, no frustum
-            // culling (animated bounds move away from the bind pose).
-            const uint32_t jointBase = jointBaseFor(node.skinIndex);
-            DrawItem item{0, node.material.id, node.mesh, 0.0f, 1, jointBase};
+        const MeshRange& nodeRange = scene.meshes->range(node.mesh);
+        const bool skinned = node.skinIndex >= 0 &&
+                             static_cast<size_t>(node.skinIndex) < scene.skins.size();
+        const bool morphed = nodeRange.morphTargetCount > 0;
+        if (skinned || morphed) {
+            // Skinned/morphed: pose comes from joints/weights — no
+            // instancing, and skinned meshes skip frustum culling (their
+            // animated bounds leave the bind pose).
+            const uint32_t jointBase = skinned ? jointBaseFor(node.skinIndex) : kNoJoints;
+            uint32_t morphWeightBase = 0;
+            if (morphed) {
+                morphWeightBase = static_cast<uint32_t>(frameMorphWeights.size());
+                for (uint32_t t = 0; t < nodeRange.morphTargetCount; ++t)
+                    frameMorphWeights.push_back(
+                        t < node.morphWeights.size() ? node.morphWeights[t] : 0.0f);
+            }
+            DrawItem item{0,         node.material.id, node.mesh,
+                          0.0f,      1,                jointBase,
+                          morphWeightBase, nodeRange.morphTargetCount};
+            if (!skinned) {
+                // Morph-only nodes still follow their node transform.
+                item.transformIndex = static_cast<uint32_t>(transforms.size());
+                transforms.push_back(node.world);
+            }
             if (blends) {
                 const Vec3 worldCenter = Vec3(node.world[3]);
                 item.viewDepth = -(ubo.view * Vec4{worldCenter, 1.0f}).z;
                 blendDraws.push_back(item);
             } else {
                 skinnedDraws.push_back(item);
-                skinnedShadowDraws.push_back({0, 1, node.mesh, jointBase});
+                skinnedShadowDraws.push_back({item.transformIndex, 1, node.mesh, jointBase,
+                                              morphWeightBase, nodeRange.morphTargetCount});
             }
             continue;
         }
@@ -1085,6 +1129,15 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     if (!jointMatrices.empty())
         std::memcpy(jointBuffers_[slot].mapped, jointMatrices.data(),
                     jointMatrices.size() * sizeof(Mat4));
+    ensureCapacity(morphWeightBuffers_[slot],
+                   std::max<size_t>(frameMorphWeights.size(), 1) * sizeof(float), slot, frames);
+    if (!frameMorphWeights.empty())
+        std::memcpy(morphWeightBuffers_[slot].mapped, frameMorphWeights.data(),
+                    frameMorphWeights.size() * sizeof(float));
+    if (scene.meshes->morphDeltaBuffer() != boundMorphDeltaBuffer_) {
+        boundMorphDeltaBuffer_ = scene.meshes->morphDeltaBuffer();
+        for (bool& dirty : descriptorsDirty_) dirty = true;
+    }
     if (descriptorsDirty_[slot]) updateDescriptors(slot);
 
     // ---- shadow passes
@@ -1212,12 +1265,18 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
 
         auto recordDraws = [&](const std::vector<DrawItem>& items) {
             for (const DrawItem& draw : items) {
-                const MeshPush push{draw.transformIndex, draw.materialIndex, draw.jointBase,
-                                    0};
+                const MeshRange& range = scene.meshes->range(draw.mesh);
+                const MeshPush push{draw.transformIndex,
+                                    draw.materialIndex,
+                                    draw.jointBase,
+                                    draw.morphWeightBase,
+                                    range.morphDeltaBase,
+                                    draw.morphTargetCount,
+                                    static_cast<uint32_t>(range.vertexOffset),
+                                    range.vertexCount};
                 vkCmdPushConstants(cmd, meshLayout_,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                    sizeof(push), &push);
-                const MeshRange& range = scene.meshes->range(draw.mesh);
                 vkCmdDrawIndexed(cmd, range.indexCount, draw.instances, range.firstIndex,
                                  range.vertexOffset, 0);
             }

@@ -13,7 +13,7 @@
 namespace rendy::detail {
 
 struct AnimationChannel {
-    enum class Path : uint8_t { Translation, Rotation, Scale };
+    enum class Path : uint8_t { Translation, Rotation, Scale, Weights };
     enum class Interpolation : uint8_t { Step, Linear, CubicSpline };
     uint32_t node = UINT32_MAX; // scene node index
     Path path = Path::Translation;
@@ -22,6 +22,10 @@ struct AnimationChannel {
     // vec3 payloads in xyz; rotations as quaternion xyzw. CubicSpline stores
     // triples per keyframe: inTangent, value, outTangent.
     std::vector<Vec4> values;
+    // Weights channels instead use scalars: targetCount per keyframe
+    // (CubicSpline: 3 * targetCount — in-tangents, values, out-tangents).
+    std::vector<float> scalarValues;
+    uint32_t targetCount = 0;
 };
 
 /// Samples one channel at absolute clip time `t` (caller handles looping).
@@ -101,6 +105,60 @@ inline bool animationSampleTime(float playbackTime, float startTime, float durat
     return true;
 }
 
+/// Samples a Weights channel at time t into out[0..targetCount).
+inline void sampleAnimationWeights(const AnimationChannel& channel, float t, float* out) {
+    using Interp = AnimationChannel::Interpolation;
+    const auto& times = channel.times;
+    const uint32_t n = channel.targetCount;
+    if (times.empty() || n == 0) return;
+    const bool cubic = channel.interpolation == Interp::CubicSpline;
+    const size_t keyStride = static_cast<size_t>(n) * (cubic ? 3 : 1);
+    // In a cubic key the values live between the in/out tangent blocks.
+    const size_t valueOffset = cubic ? n : 0;
+    auto keyValues = [&](size_t key) {
+        return channel.scalarValues.data() + key * keyStride + valueOffset;
+    };
+
+    if (t <= times.front()) {
+        std::copy_n(keyValues(0), n, out);
+        return;
+    }
+    if (t >= times.back()) {
+        std::copy_n(keyValues(times.size() - 1), n, out);
+        return;
+    }
+    const auto it = std::upper_bound(times.begin(), times.end(), t);
+    const size_t next = static_cast<size_t>(it - times.begin());
+    const size_t prev = next - 1;
+    const float span = times[next] - times[prev];
+    const float u = span > 0.0f ? (t - times[prev]) / span : 0.0f;
+
+    switch (channel.interpolation) {
+    case Interp::Step:
+        std::copy_n(keyValues(prev), n, out);
+        return;
+    case Interp::Linear: {
+        const float* a = keyValues(prev);
+        const float* b = keyValues(next);
+        for (uint32_t i = 0; i < n; ++i) out[i] = a[i] + (b[i] - a[i]) * u;
+        return;
+    }
+    case Interp::CubicSpline: {
+        const float* v0 = keyValues(prev);
+        const float* b0 = channel.scalarValues.data() + prev * keyStride + 2 * n; // out-tan
+        const float* a1 = channel.scalarValues.data() + next * keyStride;         // in-tan
+        const float* v1 = keyValues(next);
+        const float u2 = u * u;
+        const float u3 = u2 * u;
+        for (uint32_t i = 0; i < n; ++i)
+            out[i] = (2.0f * u3 - 3.0f * u2 + 1.0f) * v0[i] +
+                     (u3 - 2.0f * u2 + u) * span * b0[i] + (-2.0f * u3 + 3.0f * u2) * v1[i] +
+                     (u3 - u2) * span * a1[i];
+        return;
+    }
+    }
+}
+
 /// Accumulates weighted TRS samples from several clips for one node and
 /// resolves them into a Transform (weights are normalized, so a single clip
 /// at weight 0.3 still gives its full pose).
@@ -111,6 +169,14 @@ struct TransformAccumulator {
     float rotationWeight = 0.0f;
     Vec3 scale{0.0f};
     float scaleWeight = 0.0f;
+    std::vector<float> morph; // accumulated morph target weights
+    float morphWeight = 0.0f;
+
+    void addMorph(const float* values, uint32_t count, float weight) {
+        if (morph.size() < count) morph.resize(count, 0.0f);
+        for (uint32_t i = 0; i < count; ++i) morph[i] += values[i] * weight;
+        morphWeight += weight;
+    }
 
     void add(AnimationChannel::Path path, const Vec4& value, float weight) {
         switch (path) {
@@ -130,6 +196,8 @@ struct TransformAccumulator {
             scale += Vec3(value) * weight;
             scaleWeight += weight;
             break;
+        case AnimationChannel::Path::Weights:
+            break; // use addMorph
         }
     }
 
@@ -144,6 +212,12 @@ struct TransformAccumulator {
             if (length > 1e-5f) transform.rotation = quat / length;
         }
         if (scaleWeight > 1e-5f) transform.scale = scale / scaleWeight;
+    }
+
+    void applyMorph(std::vector<float>& target) const {
+        if (morphWeight <= 1e-5f) return;
+        if (target.size() < morph.size()) target.resize(morph.size(), 0.0f);
+        for (size_t i = 0; i < morph.size(); ++i) target[i] = morph[i] / morphWeight;
     }
 };
 

@@ -25,15 +25,19 @@ MeshStore::MeshStore(gpu::Context& ctx, gpu::Uploader& uploader)
     : ctx_(ctx), uploader_(uploader) {
     vertexCapacity_ = kInitialVertexBytes;
     indexCapacity_ = kInitialIndexBytes;
+    morphCapacity_ = sizeof(MorphDelta); // grown on first morphed mesh
     createBuffer(ctx_, vertexCapacity_, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &vertexBuffer_,
                  &vertexAllocation_);
     createBuffer(ctx_, indexCapacity_, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &indexBuffer_,
                  &indexAllocation_);
+    createBuffer(ctx_, morphCapacity_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &morphBuffer_,
+                 &morphAllocation_);
 }
 
 MeshStore::~MeshStore() {
     vmaDestroyBuffer(ctx_.allocator(), vertexBuffer_, vertexAllocation_);
     vmaDestroyBuffer(ctx_.allocator(), indexBuffer_, indexAllocation_);
+    vmaDestroyBuffer(ctx_.allocator(), morphBuffer_, morphAllocation_);
 }
 
 void MeshStore::ensureRoom(size_t vertexBytes, size_t indexBytes) {
@@ -94,7 +98,55 @@ MeshHandle MeshStore::add(const MeshData& data) {
                          vkCmdCopyBuffer(cmd, staging, indexBuffer_, 1, &copy);
                      });
 
+    // Morph target deltas → the shared delta SSBO.
+    uint32_t morphDeltaBase = UINT32_MAX;
+    if (!data.morphTargets.empty()) {
+        const size_t vertexCount = data.vertices.size();
+        std::vector<MorphDelta> deltas;
+        deltas.reserve(data.morphTargets.size() * vertexCount);
+        for (const MorphTarget& target : data.morphTargets) {
+            for (size_t v = 0; v < vertexCount; ++v) {
+                MorphDelta delta{};
+                if (v < target.positionDeltas.size())
+                    delta.position = Vec4{target.positionDeltas[v], 0.0f};
+                if (v < target.normalDeltas.size())
+                    delta.normal = Vec4{target.normalDeltas[v], 0.0f};
+                deltas.push_back(delta);
+            }
+        }
+        const size_t deltaBytes = deltas.size() * sizeof(MorphDelta);
+        const size_t needed = (morphEntryCount_ + deltas.size()) * sizeof(MorphDelta);
+        if (needed > morphCapacity_) {
+            size_t newCapacity = std::max<size_t>(morphCapacity_, 64 * 1024);
+            while (newCapacity < needed) newCapacity *= 2;
+            VkBuffer newBuffer;
+            VmaAllocation newAllocation;
+            createBuffer(ctx_, newCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &newBuffer,
+                         &newAllocation);
+            const uint8_t dummy = 0;
+            uploader_.submit(&dummy, 1, [&](VkCommandBuffer cmd, VkBuffer) {
+                if (morphEntryCount_ > 0) {
+                    VkBufferCopy copy{0, 0, morphEntryCount_ * sizeof(MorphDelta)};
+                    vkCmdCopyBuffer(cmd, morphBuffer_, newBuffer, 1, &copy);
+                }
+            });
+            vmaDestroyBuffer(ctx_.allocator(), morphBuffer_, morphAllocation_);
+            morphBuffer_ = newBuffer;
+            morphAllocation_ = newAllocation;
+            morphCapacity_ = newCapacity;
+        }
+        uploader_.submit(deltas.data(), deltaBytes, [&](VkCommandBuffer cmd, VkBuffer staging) {
+            VkBufferCopy copy{0, morphEntryCount_ * sizeof(MorphDelta), deltaBytes};
+            vkCmdCopyBuffer(cmd, staging, morphBuffer_, 1, &copy);
+        });
+        morphDeltaBase = morphEntryCount_;
+        morphEntryCount_ += static_cast<uint32_t>(deltas.size());
+    }
+
     MeshRange range;
+    range.morphDeltaBase = morphDeltaBase;
+    range.morphTargetCount = static_cast<uint32_t>(data.morphTargets.size());
+    range.vertexCount = static_cast<uint32_t>(data.vertices.size());
     range.firstIndex = indexCount_;
     range.indexCount = static_cast<uint32_t>(data.indices.size());
     range.vertexOffset = static_cast<int32_t>(vertexCount_);

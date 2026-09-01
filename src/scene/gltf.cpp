@@ -235,6 +235,27 @@ struct GltfLoader {
                         [&](uint32_t value, size_t i) { mesh.indices[i] = value; });
                 }
 
+                // Morph targets (POSITION/NORMAL deltas).
+                for (size_t targetIndex = 0; targetIndex < primitive.targets.size();
+                     ++targetIndex) {
+                    MorphTarget target;
+                    if (auto attr = primitive.findTargetAttribute(targetIndex, "POSITION");
+                        attr != primitive.targets[targetIndex].end()) {
+                        target.positionDeltas.resize(mesh.vertices.size(), Vec3{0.0f});
+                        fastgltf::iterateAccessorWithIndex<Vec3>(
+                            asset, asset.accessors[attr->accessorIndex],
+                            [&](Vec3 value, size_t i) { target.positionDeltas[i] = value; });
+                    }
+                    if (auto attr = primitive.findTargetAttribute(targetIndex, "NORMAL");
+                        attr != primitive.targets[targetIndex].end()) {
+                        target.normalDeltas.resize(mesh.vertices.size(), Vec3{0.0f});
+                        fastgltf::iterateAccessorWithIndex<Vec3>(
+                            asset, asset.accessors[attr->accessorIndex],
+                            [&](Vec3 value, size_t i) { target.normalDeltas[i] = value; });
+                    }
+                    mesh.morphTargets.push_back(std::move(target));
+                }
+
                 if (!hasNormals) {
                     // Flat-ish normals from triangle accumulation.
                     for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
@@ -288,12 +309,20 @@ struct GltfLoader {
         const NodeId id = publicScene.addNode(transform, parent);
         if (nodeIndex < nodeMap.size()) nodeMap[nodeIndex] = id.index;
         if (node.meshIndex.has_value()) {
+            std::vector<float> initialWeights;
+            const auto& weightSource =
+                !node.weights.empty() ? node.weights : asset.meshes[*node.meshIndex].weights;
+            initialWeights.assign(weightSource.begin(), weightSource.end());
             for (const auto& [meshHandle, materialId] : meshPrimitives[*node.meshIndex]) {
                 const NodeId primitiveNode =
                     publicScene.addMesh(meshHandle, MaterialHandle{materialId});
                 publicScene.setParent(primitiveNode, id);
                 if (node.skinIndex.has_value())
                     pendingSkins.emplace_back(primitiveNode.index, *node.skinIndex);
+                if (!initialWeights.empty()) {
+                    scene.nodes[primitiveNode.index].morphWeights = initialWeights;
+                    scene.nodes[id.index].morphWeights = initialWeights;
+                }
             }
         }
         for (size_t child : node.children) instantiate(publicScene, child, id);
@@ -357,10 +386,11 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
                         : std::string(animation.name);
         for (const fastgltf::AnimationChannel& channel : animation.channels) {
             if (!channel.nodeIndex.has_value()) continue;
-            if (channel.path != fastgltf::AnimationPath::Translation &&
+            const bool isWeights = channel.path == fastgltf::AnimationPath::Weights;
+            if (!isWeights && channel.path != fastgltf::AnimationPath::Translation &&
                 channel.path != fastgltf::AnimationPath::Rotation &&
                 channel.path != fastgltf::AnimationPath::Scale)
-                continue; // morph weights: not in v1
+                continue;
             const uint32_t sceneNode = *channel.nodeIndex < loader.nodeMap.size()
                                            ? loader.nodeMap[*channel.nodeIndex]
                                            : UINT32_MAX;
@@ -370,7 +400,8 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
             detail::AnimationChannel sceneChannel;
             sceneChannel.node = sceneNode;
             sceneChannel.path =
-                channel.path == fastgltf::AnimationPath::Translation
+                isWeights ? detail::AnimationChannel::Path::Weights
+                : channel.path == fastgltf::AnimationPath::Translation
                     ? detail::AnimationChannel::Path::Translation
                     : channel.path == fastgltf::AnimationPath::Rotation
                           ? detail::AnimationChannel::Path::Rotation
@@ -388,6 +419,23 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
                 asset.get(), input, [&](float t, size_t i) { sceneChannel.times[i] = t; });
 
             const auto& output = asset->accessors[sampler.outputAccessor];
+            if (isWeights) {
+                // Scalars: keyCount * targetCount (cubic: ×3).
+                const fastgltf::Node& gltfNode = asset->nodes[*channel.nodeIndex];
+                if (gltfNode.meshIndex.has_value())
+                    sceneChannel.targetCount = static_cast<uint32_t>(
+                        asset->meshes[*gltfNode.meshIndex].primitives.empty()
+                            ? 0
+                            : asset->meshes[*gltfNode.meshIndex]
+                                  .primitives[0]
+                                  .targets.size());
+                sceneChannel.scalarValues.resize(output.count, 0.0f);
+                fastgltf::iterateAccessorWithIndex<float>(
+                    asset.get(), output,
+                    [&](float value, size_t i) { sceneChannel.scalarValues[i] = value; });
+                clip.channels.push_back(std::move(sceneChannel));
+                continue;
+            }
             sceneChannel.values.resize(output.count, Vec4{0.0f});
             if (sceneChannel.path == detail::AnimationChannel::Path::Rotation) {
                 fastgltf::iterateAccessorWithIndex<Vec4>(

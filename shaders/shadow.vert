@@ -14,10 +14,21 @@ layout(push_constant) uniform PC {
     mat4 lightViewProj;
     uint transformIndex;
     uint jointBase;
+    uint morphWeightBase;
+    uint morphDeltaBase;
+    uint morphTargetCount;
+    uint meshVertexBase;
+    uint meshVertexCount;
 } pc;
 
 void main() {
+    vec3 position = inPosition;
+    vec3 unusedNormal = vec3(0.0);
+    if (pc.morphTargetCount > 0u)
+        rendyApplyMorphs(pc.morphTargetCount, pc.morphWeightBase, pc.morphDeltaBase,
+                         pc.meshVertexCount, uint(gl_VertexIndex) - pc.meshVertexBase,
+                         position, unusedNormal);
     const mat4 model = rendyModelMatrix(pc.transformIndex, pc.jointBase, inJoints, inWeights,
                                         gl_InstanceIndex);
-    gl_Position = pc.lightViewProj * model * vec4(inPosition, 1.0);
+    gl_Position = pc.lightViewProj * model * vec4(position, 1.0);
 }

@@ -82,6 +82,9 @@ public:
     /// Valid for nodes created with addLight.
     [[nodiscard]] Light& light(NodeId id);
     void setMaterial(NodeId node, MaterialHandle material);
+    /// Morph target (shape key) weights for a mesh node — procedural
+    /// control; glTF weight animations drive this automatically.
+    void setMorphWeights(NodeId node, std::vector<float> weights);
 
     /// Flat ambient light (linear-ish sRGB color, small values look right).
     /// Used when no environment is set.

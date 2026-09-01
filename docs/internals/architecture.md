@@ -106,6 +106,11 @@ mtime change (debug builds).
   blends joint matrices when `jointBase != NO_JOINTS` — the same path serves
   the camera pass and the shadow passes, so shadows are skinned too.
   Skinned draws skip instancing and frustum culling (animated bounds).
+  **Morph targets**: per-target position/normal deltas live in a static
+  SSBO in the MeshStore (binding 12); per-frame weights (binding 13) are
+  gathered per drawn node, and both vertex shaders apply deltas before
+  skinning. Weight animations sample per-element (step/linear/cubic) and
+  blend through the same accumulator as TRS channels.
 - **Shadows**: fixed arrays created up front — CSM 2048²×4, spots 1024²×8,
   point cubes 512²×24 — rendered by one depth-only vertex-shader pipeline
   (light matrix in push constants), sampled via compare samplers (PCF 3×3)

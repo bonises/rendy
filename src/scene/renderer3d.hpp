@@ -125,6 +125,8 @@ private:
         uint32_t instances;
         MeshHandle mesh;
         uint32_t jointBase = 0xFFFFFFFFu; // kNoJoints
+        uint32_t morphWeightBase = 0;
+        uint32_t morphTargetCount = 0;
     };
     void renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array, uint32_t layer,
                           const Mat4& lightViewProj, SceneImpl& scene,
@@ -142,6 +144,8 @@ private:
     MappedBuffer materialBuffers_[gpu::kFramesInFlight];
     MappedBuffer lightBuffers_[gpu::kFramesInFlight];
     MappedBuffer jointBuffers_[gpu::kFramesInFlight];
+    MappedBuffer morphWeightBuffers_[gpu::kFramesInFlight];
+    VkBuffer boundMorphDeltaBuffer_ = VK_NULL_HANDLE; // scene's static delta SSBO
 };
 
 } // namespace rendy::detail

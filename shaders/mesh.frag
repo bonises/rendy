@@ -17,6 +17,11 @@ layout(push_constant) uniform PC {
     uint transformIndex;
     uint materialIndex;
     uint jointBase;
+    uint morphWeightBase;
+    uint morphDeltaBase;
+    uint morphTargetCount;
+    uint meshVertexBase;
+    uint meshVertexCount;
 } pc;
 
 layout(location = 0) in vec3 vWorldPos;

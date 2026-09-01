@@ -19,9 +19,17 @@ struct Vertex {
     Vec4 weights{0.0f};       ///< skinning: joint weights (sum ~1)
 };
 
+/// One morph target (shape key): per-vertex deltas added to the base mesh,
+/// scaled by the target's weight.
+struct MorphTarget {
+    std::vector<Vec3> positionDeltas; ///< size = vertex count (or empty)
+    std::vector<Vec3> normalDeltas;   ///< optional
+};
+
 struct MeshData {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<MorphTarget> morphTargets;
 
     /// Bounding sphere for culling; computed by Scene if radius == 0.
     Vec3 boundsCenter{0.0f};

@@ -149,6 +149,15 @@ void Scene::setMaterial(NodeId node, MaterialHandle material) {
     impl_->nodes[node.index].material = material;
 }
 
+void Scene::setMorphWeights(NodeId node, std::vector<float> weights) {
+    if (!validNode(node)) return;
+    impl_->nodes[node.index].morphWeights = std::move(weights);
+    // Mesh primitives are children of the glTF node; mirror onto them too.
+    for (uint32_t i = 0; i < impl_->nodes.size(); ++i)
+        if (impl_->nodes[i].parent == node.index && impl_->nodes[i].mesh.valid())
+            impl_->nodes[i].morphWeights = impl_->nodes[node.index].morphWeights;
+}
+
 void Scene::setAmbient(Color color) { impl_->ambient = color; }
 
 Result<void> Scene::setEnvironment(const std::string& hdrPath, float intensity) {
@@ -297,15 +306,31 @@ void Scene::updateAnimations(float dt) {
 
         for (const auto& channel : animation.channels) {
             if (channel.node >= scratch.size()) continue;
-            const Vec4 value = detail::sampleAnimationChannel(channel, sampleTime);
-            scratch[channel.node].add(channel.path, value, animation.weight);
+            if (channel.path == detail::AnimationChannel::Path::Weights) {
+                thread_local std::vector<float> sampled;
+                sampled.assign(channel.targetCount, 0.0f);
+                detail::sampleAnimationWeights(channel, sampleTime, sampled.data());
+                scratch[channel.node].addMorph(sampled.data(), channel.targetCount,
+                                               animation.weight);
+            } else {
+                const Vec4 value = detail::sampleAnimationChannel(channel, sampleTime);
+                scratch[channel.node].add(channel.path, value, animation.weight);
+            }
             anySamples = true;
         }
     }
 
     if (!anySamples) return;
-    for (uint32_t i = 0; i < scratch.size(); ++i)
+    for (uint32_t i = 0; i < scratch.size(); ++i) {
         scratch[i].apply(impl_->nodes[i].local);
+        if (scratch[i].morphWeight > 0.0f) {
+            scratch[i].applyMorph(impl_->nodes[i].morphWeights);
+            // Mirror onto mesh primitive children (they hold the meshes).
+            for (uint32_t child = 0; child < impl_->nodes.size(); ++child)
+                if (impl_->nodes[child].parent == i && impl_->nodes[child].mesh.valid())
+                    impl_->nodes[child].morphWeights = impl_->nodes[i].morphWeights;
+        }
+    }
 }
 
 float Scene::approximateRadius(NodeId root) {
