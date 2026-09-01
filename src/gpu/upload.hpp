@@ -25,8 +25,9 @@ public:
                 const std::function<void(VkCommandBuffer, VkBuffer)>& record);
 
     /// Standard image upload: staging → transition → copy → SHADER_READ_ONLY.
+    /// With mipLevels > 1, generates the chain with blits.
     void uploadImage(VkImage image, const void* pixels, size_t size, uint32_t width,
-                     uint32_t height);
+                     uint32_t height, uint32_t mipLevels = 1);
 
 private:
     Context& ctx_;

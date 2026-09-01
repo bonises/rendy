@@ -26,6 +26,8 @@ struct TextureOptions {
     Wrap wrap = Wrap::Clamp;
     /// Treat pixel data as sRGB (UI images, albedo). Off for data textures.
     bool srgb = true;
+    /// Generate a full mip chain + anisotropic sampling (3D textures).
+    bool mipmaps = false;
 };
 
 } // namespace rendy

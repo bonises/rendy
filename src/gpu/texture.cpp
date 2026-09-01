@@ -2,6 +2,8 @@
 
 #include <stb_image.h>
 
+#include <algorithm>
+
 namespace rendy::gpu {
 
 TexturePool::TexturePool(Context& ctx, BindlessTable& bindless, Uploader& uploader)
@@ -33,16 +35,26 @@ Result<TextureRef> TexturePool::create(const void* pixels, IVec2 size, VkFormat 
     entry.size = size;
     entry.format = format;
 
+    uint32_t mipLevels = 1;
+    if (options.mipmaps) {
+        uint32_t maxDim = std::max(width, height);
+        while (maxDim > 1) {
+            maxDim /= 2;
+            mipLevels++;
+        }
+    }
+
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.format = format;
     imageInfo.extent = {width, height, 1};
-    imageInfo.mipLevels = 1;
+    imageInfo.mipLevels = mipLevels;
     imageInfo.arrayLayers = 1;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (mipLevels > 1) imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
     VmaAllocationCreateInfo allocCreate{};
     allocCreate.usage = VMA_MEMORY_USAGE_AUTO;
@@ -54,7 +66,7 @@ Result<TextureRef> TexturePool::create(const void* pixels, IVec2 size, VkFormat 
     viewInfo.image = entry.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format;
-    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
     if (format == VK_FORMAT_R8_UNORM)
         viewInfo.components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
                                VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R};
@@ -68,14 +80,21 @@ Result<TextureRef> TexturePool::create(const void* pixels, IVec2 size, VkFormat 
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = linearFilter ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     samplerInfo.minFilter = samplerInfo.magFilter;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samplerInfo.mipmapMode =
+        options.mipmaps ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     samplerInfo.addressModeU = addressMode;
     samplerInfo.addressModeV = addressMode;
     samplerInfo.addressModeW = addressMode;
+    if (options.mipmaps) {
+        samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        samplerInfo.maxAnisotropy = 16.0f;
+    }
     VK_CHECK(vkCreateSampler(ctx_.device(), &samplerInfo, nullptr, &entry.sampler));
 
     uploader_.uploadImage(entry.image, pixels,
-                          static_cast<size_t>(width) * height * bytesPerPixel, width, height);
+                          static_cast<size_t>(width) * height * bytesPerPixel, width, height,
+                          mipLevels);
 
     const uint32_t index = bindless_.add(entry.view, entry.sampler);
     entries_.emplace(index, entry);

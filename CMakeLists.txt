@@ -41,6 +41,7 @@ add_library(rendy STATIC
   src/scene/mesh_store.cpp
   src/scene/scene.cpp
   src/scene/renderer3d.cpp
+  src/scene/gltf.cpp
 )
 
 rendy_compile_shaders(rendy
@@ -72,7 +73,8 @@ target_link_libraries(rendy
     GPUOpen::VulkanMemoryAllocator
     stb::stb
     freetype
-    yogacore)
+    yogacore
+    fastgltf::fastgltf)
 
 target_compile_features(rendy PUBLIC cxx_std_20)
 

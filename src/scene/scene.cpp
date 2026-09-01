@@ -116,9 +116,7 @@ void Scene::setMaterial(NodeId node, MaterialHandle material) {
 
 void Scene::setAmbient(Color color) { impl_->ambient = color; }
 
-Result<NodeId> Scene::loadGltf(const std::string& path) {
-    return err("glTF loading lands in M7 (tried to load '{}')", path);
-}
+// Scene::loadGltf lives in gltf.cpp.
 
 // ------------------------------------------------------------------ NodeRef
 

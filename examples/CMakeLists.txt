@@ -11,6 +11,7 @@ rendy_example(01_hello)
 rendy_example(02_ui_gallery)
 rendy_example(03_text_editor_lite)
 rendy_example(04_scene3d)
+rendy_example(05_model_viewer)
 
 # Runtime assets copied next to the binaries.
 add_custom_command(TARGET 02_ui_gallery POST_BUILD

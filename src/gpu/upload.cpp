@@ -1,5 +1,6 @@
 #include "gpu/upload.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace rendy::gpu {
@@ -67,7 +68,7 @@ void Uploader::submit(const void* data, size_t size,
 }
 
 void Uploader::uploadImage(VkImage image, const void* pixels, size_t size, uint32_t width,
-                           uint32_t height) {
+                           uint32_t height, uint32_t mipLevels) {
     submit(pixels, size, [&](VkCommandBuffer cmd, VkBuffer staging) {
         imageBarrier(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -79,10 +80,65 @@ void Uploader::uploadImage(VkImage image, const void* pixels, size_t size, uint3
         vkCmdCopyBufferToImage(cmd, staging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                &region);
 
-        imageBarrier(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        // Blit each level from the previous one.
+        int32_t srcWidth = static_cast<int32_t>(width);
+        int32_t srcHeight = static_cast<int32_t>(height);
+        for (uint32_t level = 1; level < mipLevels; ++level) {
+            // Previous level: DST → SRC.
+            VkImageMemoryBarrier2 toSrc{};
+            toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            toSrc.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            toSrc.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            toSrc.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            toSrc.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toSrc.image = image;
+            toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 1, 0, 1};
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &toSrc;
+            vkCmdPipelineBarrier2(cmd, &dep);
+
+            const int32_t dstWidth = std::max(srcWidth / 2, 1);
+            const int32_t dstHeight = std::max(srcHeight / 2, 1);
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 0, 1};
+            blit.srcOffsets[1] = {srcWidth, srcHeight, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            blit.dstOffsets[1] = {dstWidth, dstHeight, 1};
+            vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+            // Previous level is done: SRC → SHADER_READ.
+            toSrc.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            toSrc.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            toSrc.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toSrc.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            vkCmdPipelineBarrier2(cmd, &dep);
+
+            srcWidth = dstWidth;
+            srcHeight = dstHeight;
+        }
+
+        // Last level (or the whole image when mipLevels == 1): DST → READ.
+        VkImageMemoryBarrier2 finalBarrier{};
+        finalBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        finalBarrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        finalBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        finalBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        finalBarrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        finalBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        finalBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        finalBarrier.image = image;
+        finalBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mipLevels - 1, 1, 0, 1};
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &finalBarrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
     });
 }
 
