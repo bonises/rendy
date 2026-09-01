@@ -5,6 +5,12 @@
 #include <algorithm>
 #include <cmath>
 
+#ifdef RENDY_SHADER_HOT_RELOAD
+#include "gpu/shader_compiler.hpp"
+
+#include <filesystem>
+#endif
+
 namespace rendy {
 namespace detail {
 namespace {
@@ -102,7 +108,74 @@ AppImpl::~AppImpl() {
     SDL_Quit();
 }
 
+#ifdef RENDY_SHADER_HOT_RELOAD
+
+namespace {
+uint64_t mtimeOf(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto time = std::filesystem::last_write_time(path, ec);
+    return ec ? 0 : static_cast<uint64_t>(time.time_since_epoch().count());
+}
+} // namespace
+
+void AppImpl::initShaderWatch() {
+    std::error_code ec;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(RENDY_SHADER_SOURCE_DIR, ec)) {
+        const auto extension = entry.path().extension().string();
+        const bool isStage = extension == ".vert" || extension == ".frag";
+        const bool isInclude = extension == ".glsl";
+        if (!isStage && !isInclude) continue;
+        watchedShaders.push_back({entry.path().string(), entry.path().filename().string(),
+                                  mtimeOf(entry.path()), isInclude});
+    }
+    if (!watchedShaders.empty())
+        log::debug("shader hot reload: watching {} files in {}", watchedShaders.size(),
+                   RENDY_SHADER_SOURCE_DIR);
+}
+
+void AppImpl::recompileShader(const WatchedShader& shader) {
+    auto spirv = gpu::compileGlslFile(shader.path);
+    if (!spirv) {
+        log::error("{}", spirv.error().message);
+        return; // keep the old pipeline
+    }
+    bool used = renderer2d->reloadShader(shader.name, spirv.value(), *frames);
+    if (!used) used = renderer3d->reloadShader(shader.name, std::move(spirv).value(), *frames);
+    if (used) log::info("shader hot reload: {} rebuilt", shader.name);
+}
+
+void AppImpl::checkShaderReload() {
+    const double now = static_cast<double>(SDL_GetTicksNS()) * 1e-9;
+    if (now - lastShaderCheck < 0.5) return;
+    lastShaderCheck = now;
+
+    bool includeChanged = false;
+    std::vector<const WatchedShader*> changed;
+    for (WatchedShader& shader : watchedShaders) {
+        const uint64_t mtime = mtimeOf(shader.path);
+        if (mtime == 0 || mtime == shader.mtime) continue;
+        shader.mtime = mtime;
+        if (shader.isInclude)
+            includeChanged = true;
+        else
+            changed.push_back(&shader);
+    }
+    if (includeChanged) {
+        // A shared include changed: recompile every stage that may use it.
+        for (const WatchedShader& shader : watchedShaders)
+            if (!shader.isInclude) recompileShader(shader);
+    } else {
+        for (const WatchedShader* shader : changed) recompileShader(*shader);
+    }
+}
+
+#endif // RENDY_SHADER_HOT_RELOAD
+
 bool AppImpl::pollEvents() {
+#ifdef RENDY_SHADER_HOT_RELOAD
+    checkShaderReload();
+#endif
     // Edge states last exactly one pollEvents interval.
     input.mousePressed_.reset();
     input.mouseReleased_.reset();
@@ -311,6 +384,9 @@ Result<App> App::create(const AppConfig& config) {
                                                             impl->swapchain->format());
     impl->renderer3d = std::make_unique<detail::Renderer3D>(*impl->gpu, *impl->bindless,
                                                             impl->swapchain->format());
+#ifdef RENDY_SHADER_HOT_RELOAD
+    impl->initShaderWatch();
+#endif
 
     impl->startTick = impl->lastTick = SDL_GetTicksNS();
     SDL_StartTextInput(impl->window);

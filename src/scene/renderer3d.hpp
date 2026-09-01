@@ -7,8 +7,11 @@
 #include "gpu/bindless.hpp"
 #include "gpu/context.hpp"
 #include "gpu/frame.hpp"
+#include "gpu/shader_blob.hpp"
 #include "scene/scene_impl.hpp"
 #include "rendy/scene/camera.hpp"
+
+#include <string_view>
 
 namespace rendy::detail {
 
@@ -30,6 +33,11 @@ public:
     float exposure = 1.0f;
     float shadowDistance = 60.0f; ///< directional shadows reach this far
 
+    /// Hot reload: replace one of mesh/tonemap/shadow shaders by filename
+    /// and rebuild the pipelines. Returns false for unknown names.
+    bool reloadShader(std::string_view name, std::vector<uint32_t> spirv,
+                      gpu::FrameRing& frames);
+
     static constexpr uint32_t kMaxCascades = 4;
     static constexpr uint32_t kMaxSpotShadows = 8;
     static constexpr uint32_t kMaxPointShadows = 4;
@@ -47,7 +55,8 @@ private:
         VkImageView view = VK_NULL_HANDLE;
     };
 
-    void createPipelines(VkFormat swapchainFormat);
+    void createLayouts();
+    void createPipelines();
     void recreateTargets(VkExtent2D extent, gpu::FrameRing& frames);
     void destroyTargets();
     void ensureCapacity(MappedBuffer& buffer, size_t bytes, uint32_t slot,
@@ -79,6 +88,9 @@ private:
     VkPipelineLayout tonemapLayout_ = VK_NULL_HANDLE;
     VkPipeline tonemapPipeline_ = VK_NULL_HANDLE;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
+    VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
+    gpu::ShaderBlob meshVertBlob_, meshFragBlob_, tonemapVertBlob_, tonemapFragBlob_,
+        shadowVertBlob_;
 
     // Shadow map storage (fixed size, created up front).
     struct ShadowArray {

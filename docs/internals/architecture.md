@@ -110,6 +110,14 @@ file dependencies. `#include` works via `GL_GOOGLE_include_directive`
 (`scene_common.glsl` holds the shared set-1 interface; keep it in sync with
 `FrameUbo`/`GpuMaterial`/`GpuLight` in C++).
 
+**Hot reload** (`RENDY_SHADER_HOT_RELOAD`, ON in the debug preset): glslang
+is linked into rendy (`gpu/shader_compiler.*`), the source `shaders/` dir is
+mtime-polled from `pollEvents` (0.5 s), and a changed file recompiles
+in-process; renderers swap the `ShaderBlob` and rebuild their pipelines with
+old ones retired through the frame ring (`reloadShader` on
+Renderer2D/Renderer3D). A `.glsl` include change recompiles every stage.
+Compile errors log and keep the old pipeline.
+
 ## Audio (`src/audio/`)
 
 SDL3 audio stream (48 kHz float stereo) pulls from a 32-voice mixer in the

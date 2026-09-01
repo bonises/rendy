@@ -10,6 +10,7 @@ option(RENDY_BUILD_EXAMPLES "Build the example apps" ON)
 option(RENDY_BUILD_TESTS "Build the unit tests" ON)
 option(RENDY_WERROR "Treat warnings as errors (CI)" OFF)
 option(RENDY_VULKAN_VALIDATION "Enable Vulkan validation layers by default" OFF)
+option(RENDY_SHADER_HOT_RELOAD "Recompile shaders/ at runtime when files change (links glslang into rendy)" OFF)
 set(RENDY_SANITIZE "" CACHE STRING "Semicolon list of sanitizers, e.g. address;undefined")
 
 include(cmake/Warnings.cmake)
@@ -26,6 +27,7 @@ add_library(rendy STATIC
   src/gpu/bindless.cpp
   src/gpu/upload.cpp
   src/gpu/texture.cpp
+  src/gpu/shader_compiler.cpp
   src/gpu/vma_impl.cpp
   src/gpu/stb_impl.cpp
   src/canvas/canvas.cpp
@@ -63,6 +65,11 @@ target_include_directories(rendy PRIVATE src)
 target_compile_definitions(rendy PRIVATE VK_NO_PROTOTYPES)
 if(RENDY_VULKAN_VALIDATION)
   target_compile_definitions(rendy PRIVATE RENDY_ENABLE_VALIDATION)
+endif()
+if(RENDY_SHADER_HOT_RELOAD)
+  target_compile_definitions(rendy PRIVATE RENDY_SHADER_HOT_RELOAD
+    RENDY_SHADER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+  target_link_libraries(rendy PRIVATE glslang SPIRV glslang-default-resource-limits)
 endif()
 
 target_link_libraries(rendy

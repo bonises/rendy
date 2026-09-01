@@ -58,6 +58,20 @@ struct AppImpl {
     Frame beginFrame(const FrameConfig& config);
     void present();
     Canvas canvas() { return Canvas(&canvasData); }
+
+#ifdef RENDY_SHADER_HOT_RELOAD
+    struct WatchedShader {
+        std::string path;
+        std::string name; // e.g. "mesh.frag"
+        uint64_t mtime = 0;
+        bool isInclude = false; // .glsl: a change recompiles everything
+    };
+    std::vector<WatchedShader> watchedShaders;
+    double lastShaderCheck = 0.0;
+    void initShaderWatch();
+    void checkShaderReload();
+    void recompileShader(const WatchedShader& shader);
+#endif
 };
 
 } // namespace rendy::detail

@@ -15,7 +15,9 @@ ctest --preset debug
 
 Presets: `debug` (validation layers on), `release`, `asan`. Options:
 `RENDY_BUILD_EXAMPLES`, `RENDY_BUILD_TESTS`, `RENDY_WERROR`,
-`RENDY_VULKAN_VALIDATION`, `RENDY_SANITIZE`.
+`RENDY_VULKAN_VALIDATION`, `RENDY_SHADER_HOT_RELOAD` (ON in the debug
+preset: edit `shaders/*` while an app runs and pipelines rebuild live),
+`RENDY_SANITIZE`.
 
 ## Where things live
 

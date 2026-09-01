@@ -6,6 +6,9 @@
 #include "gpu/bindless.hpp"
 #include "gpu/context.hpp"
 #include "gpu/frame.hpp"
+#include "gpu/shader_blob.hpp"
+
+#include <string_view>
 
 namespace rendy::detail {
 
@@ -22,7 +25,14 @@ public:
     void flush(VkCommandBuffer cmd, uint32_t slot, const CanvasData& data,
                gpu::FrameRing& frames);
 
+    /// Hot reload: replace "quad2d.vert"/"quad2d.frag" and rebuild the
+    /// pipeline (old one retired through the frame ring). Returns false for
+    /// unknown names.
+    bool reloadShader(std::string_view name, std::vector<uint32_t> spirv,
+                      gpu::FrameRing& frames);
+
 private:
+    VkPipeline buildPipeline();
     struct MappedBuffer {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
@@ -44,6 +54,9 @@ private:
 
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkFormat colorFormat_ = VK_FORMAT_UNDEFINED;
+    gpu::ShaderBlob vertBlob_;
+    gpu::ShaderBlob fragBlob_;
 
     MappedBuffer quadBuffers_[gpu::kFramesInFlight];
     MappedBuffer clipBuffers_[gpu::kFramesInFlight];

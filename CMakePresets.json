@@ -16,7 +16,8 @@
       "displayName": "Debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "RENDY_VULKAN_VALIDATION": "ON"
+        "RENDY_VULKAN_VALIDATION": "ON",
+        "RENDY_SHADER_HOT_RELOAD": "ON"
       }
     },
     {

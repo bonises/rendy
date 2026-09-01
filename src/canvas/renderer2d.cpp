@@ -68,10 +68,17 @@ Renderer2D::Renderer2D(gpu::Context& ctx, gpu::BindlessTable& bindless, VkFormat
     VK_CHECK(
         vkCreatePipelineLayout(ctx_.device(), &pipelineLayoutInfo, nullptr, &pipelineLayout_));
 
+    colorFormat_ = colorFormat;
+    vertBlob_ = gpu::ShaderBlob(quad2d_vert_spv, quad2d_vert_spv_words);
+    fragBlob_ = gpu::ShaderBlob(quad2d_frag_spv, quad2d_frag_spv_words);
+    pipeline_ = buildPipeline();
+}
+
+VkPipeline Renderer2D::buildPipeline() {
     // Pipeline: 4-vertex strip, no vertex input, alpha blending, dynamic
     // rendering into the swapchain format.
-    VkShaderModule vert = createModule(ctx_.device(), quad2d_vert_spv, quad2d_vert_spv_words);
-    VkShaderModule frag = createModule(ctx_.device(), quad2d_frag_spv, quad2d_frag_spv_words);
+    VkShaderModule vert = createModule(ctx_.device(), vertBlob_.data, vertBlob_.words);
+    VkShaderModule frag = createModule(ctx_.device(), fragBlob_.data, fragBlob_.words);
 
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -131,7 +138,7 @@ Renderer2D::Renderer2D(gpu::Context& ctx, gpu::BindlessTable& bindless, VkFormat
     VkPipelineRenderingCreateInfo rendering{};
     rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &colorFormat;
+    rendering.pColorAttachmentFormats = &colorFormat_;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -146,11 +153,29 @@ Renderer2D::Renderer2D(gpu::Context& ctx, gpu::BindlessTable& bindless, VkFormat
     pipelineInfo.pColorBlendState = &blend;
     pipelineInfo.pDynamicState = &dynamic;
     pipelineInfo.layout = pipelineLayout_;
-    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo, nullptr,
-                                       &pipeline_));
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo,
+                                       nullptr, &pipeline));
 
     vkDestroyShaderModule(ctx_.device(), vert, nullptr);
     vkDestroyShaderModule(ctx_.device(), frag, nullptr);
+    return pipeline;
+}
+
+bool Renderer2D::reloadShader(std::string_view name, std::vector<uint32_t> spirv,
+                              gpu::FrameRing& frames) {
+    if (name == "quad2d.vert")
+        vertBlob_.replace(std::move(spirv));
+    else if (name == "quad2d.frag")
+        fragBlob_.replace(std::move(spirv));
+    else
+        return false;
+
+    VkPipeline oldPipeline = pipeline_;
+    pipeline_ = buildPipeline();
+    VkDevice device = ctx_.device();
+    frames.defer([device, oldPipeline] { vkDestroyPipeline(device, oldPipeline, nullptr); });
+    return true;
 }
 
 Renderer2D::~Renderer2D() {

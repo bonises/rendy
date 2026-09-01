@@ -146,7 +146,40 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     createShadowArray(&spotShadows_, 1024, kMaxSpotShadows, false);
     createShadowArray(&pointShadows_, 512, kMaxPointShadows * 6, true);
 
-    createPipelines(swapchainFormat);
+    swapchainFormat_ = swapchainFormat;
+    meshVertBlob_ = gpu::ShaderBlob(mesh_vert_spv, mesh_vert_spv_words);
+    meshFragBlob_ = gpu::ShaderBlob(mesh_frag_spv, mesh_frag_spv_words);
+    tonemapVertBlob_ = gpu::ShaderBlob(tonemap_vert_spv, tonemap_vert_spv_words);
+    tonemapFragBlob_ = gpu::ShaderBlob(tonemap_frag_spv, tonemap_frag_spv_words);
+    shadowVertBlob_ = gpu::ShaderBlob(shadow_vert_spv, shadow_vert_spv_words);
+    createLayouts();
+    createPipelines();
+}
+
+void Renderer3D::createLayouts() {
+    // ---- mesh/shadow pipeline layout (push constants sized for ShadowPush)
+    VkPushConstantRange meshPush{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                 sizeof(ShadowPush)};
+    VkDescriptorSetLayout meshSets[] = {bindless_.layout(), frameSetLayout_};
+    VkPipelineLayoutCreateInfo meshLayoutInfo{};
+    meshLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    meshLayoutInfo.setLayoutCount = 2;
+    meshLayoutInfo.pSetLayouts = meshSets;
+    meshLayoutInfo.pushConstantRangeCount = 1;
+    meshLayoutInfo.pPushConstantRanges = &meshPush;
+    VK_CHECK(vkCreatePipelineLayout(ctx_.device(), &meshLayoutInfo, nullptr, &meshLayout_));
+
+    // ---- tonemap pipeline layout
+    VkPushConstantRange tonemapPush{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(TonemapPush)};
+    VkDescriptorSetLayout tonemapSets[] = {bindless_.layout()};
+    VkPipelineLayoutCreateInfo tonemapLayoutInfo{};
+    tonemapLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    tonemapLayoutInfo.setLayoutCount = 1;
+    tonemapLayoutInfo.pSetLayouts = tonemapSets;
+    tonemapLayoutInfo.pushConstantRangeCount = 1;
+    tonemapLayoutInfo.pPushConstantRanges = &tonemapPush;
+    VK_CHECK(
+        vkCreatePipelineLayout(ctx_.device(), &tonemapLayoutInfo, nullptr, &tonemapLayout_));
 }
 
 void Renderer3D::createShadowArray(ShadowArray* array, uint32_t size, uint32_t layers,
@@ -186,6 +219,28 @@ void Renderer3D::createShadowArray(ShadowArray* array, uint32_t size, uint32_t l
     }
 }
 
+bool Renderer3D::reloadShader(std::string_view name, std::vector<uint32_t> spirv,
+                              gpu::FrameRing& frames) {
+    gpu::ShaderBlob* blob = nullptr;
+    if (name == "mesh.vert") blob = &meshVertBlob_;
+    else if (name == "mesh.frag") blob = &meshFragBlob_;
+    else if (name == "tonemap.vert") blob = &tonemapVertBlob_;
+    else if (name == "tonemap.frag") blob = &tonemapFragBlob_;
+    else if (name == "shadow.vert") blob = &shadowVertBlob_;
+    else return false;
+    blob->replace(std::move(spirv));
+
+    // Rebuild everything from the current blobs; cheap with the pipeline
+    // cache, and keeps the reload path to a single code path.
+    VkDevice device = ctx_.device();
+    for (VkPipeline pipeline :
+         {meshPipeline_, meshBlendPipeline_, tonemapPipeline_, shadowPipeline_}) {
+        frames.defer([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+    }
+    createPipelines();
+    return true;
+}
+
 void Renderer3D::destroyShadowArray(ShadowArray* array) {
     for (VkImageView view : array->layerViews)
         vkDestroyImageView(ctx_.device(), view, nullptr);
@@ -221,23 +276,12 @@ Renderer3D::~Renderer3D() {
     vkDestroyDescriptorSetLayout(ctx_.device(), frameSetLayout_, nullptr);
 }
 
-void Renderer3D::createPipelines(VkFormat swapchainFormat) {
-    // ---- mesh pipeline layout
-    // Sized for the largest user (ShadowPush); the mesh pass uses 8 bytes.
-    VkPushConstantRange meshPush{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                 sizeof(ShadowPush)};
-    VkDescriptorSetLayout meshSets[] = {bindless_.layout(), frameSetLayout_};
-    VkPipelineLayoutCreateInfo meshLayoutInfo{};
-    meshLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    meshLayoutInfo.setLayoutCount = 2;
-    meshLayoutInfo.pSetLayouts = meshSets;
-    meshLayoutInfo.pushConstantRangeCount = 1;
-    meshLayoutInfo.pPushConstantRanges = &meshPush;
-    VK_CHECK(vkCreatePipelineLayout(ctx_.device(), &meshLayoutInfo, nullptr, &meshLayout_));
-
+void Renderer3D::createPipelines() {
     // ---- mesh pipeline
-    VkShaderModule meshVert = createModule(ctx_.device(), mesh_vert_spv, mesh_vert_spv_words);
-    VkShaderModule meshFrag = createModule(ctx_.device(), mesh_frag_spv, mesh_frag_spv_words);
+    VkShaderModule meshVert =
+        createModule(ctx_.device(), meshVertBlob_.data, meshVertBlob_.words);
+    VkShaderModule meshFrag =
+        createModule(ctx_.device(), meshFragBlob_.data, meshFragBlob_.words);
 
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -359,21 +403,10 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
     vkDestroyShaderModule(ctx_.device(), meshFrag, nullptr);
 
     // ---- tonemap pipeline
-    VkPushConstantRange tonemapPush{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(TonemapPush)};
-    VkDescriptorSetLayout tonemapSets[] = {bindless_.layout()};
-    VkPipelineLayoutCreateInfo tonemapLayoutInfo{};
-    tonemapLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    tonemapLayoutInfo.setLayoutCount = 1;
-    tonemapLayoutInfo.pSetLayouts = tonemapSets;
-    tonemapLayoutInfo.pushConstantRangeCount = 1;
-    tonemapLayoutInfo.pPushConstantRanges = &tonemapPush;
-    VK_CHECK(
-        vkCreatePipelineLayout(ctx_.device(), &tonemapLayoutInfo, nullptr, &tonemapLayout_));
-
     VkShaderModule tonemapVert =
-        createModule(ctx_.device(), tonemap_vert_spv, tonemap_vert_spv_words);
+        createModule(ctx_.device(), tonemapVertBlob_.data, tonemapVertBlob_.words);
     VkShaderModule tonemapFrag =
-        createModule(ctx_.device(), tonemap_frag_spv, tonemap_frag_spv_words);
+        createModule(ctx_.device(), tonemapFragBlob_.data, tonemapFragBlob_.words);
     stages[0].module = tonemapVert;
     stages[1].module = tonemapFrag;
 
@@ -387,7 +420,7 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
     VkPipelineRenderingCreateInfo tonemapRendering{};
     tonemapRendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     tonemapRendering.colorAttachmentCount = 1;
-    tonemapRendering.pColorAttachmentFormats = &swapchainFormat;
+    tonemapRendering.pColorAttachmentFormats = &swapchainFormat_;
 
     pipelineInfo.pNext = &tonemapRendering;
     pipelineInfo.pVertexInputState = &emptyInput;
@@ -402,7 +435,7 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
 
     // ---- shadow pipeline (depth only, vertex shader only)
     VkShaderModule shadowVert =
-        createModule(ctx_.device(), shadow_vert_spv, shadow_vert_spv_words);
+        createModule(ctx_.device(), shadowVertBlob_.data, shadowVertBlob_.words);
     VkPipelineShaderStageCreateInfo shadowStage{};
     shadowStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shadowStage.stage = VK_SHADER_STAGE_VERTEX_BIT;

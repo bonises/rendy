@@ -16,7 +16,7 @@ pinned automatically by CMake on the first configure.
 ## Build
 
 ```sh
-cmake --preset release          # or: debug (validation), asan
+cmake --preset release          # or: debug (validation + shader hot reload), asan
 cmake --build --preset release
 ctest --preset release          # CPU-only unit tests, no GPU needed
 ```
