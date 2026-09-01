@@ -62,8 +62,10 @@ struct Voice {
     std::atomic<float> volume{1.0f};
     std::atomic<float> pan{0.0f};
     std::atomic<uint32_t> generation{0};
-    const Sound* sound = nullptr; // set while inactive, then published by `active`
-    size_t position = 0;          // frames; touched only by the audio thread
+    // Non-atomic state: written by play()/unload() only while holding the
+    // stream lock (callback excluded), read/advanced by the audio thread.
+    const Sound* sound = nullptr;
+    size_t position = 0;
 };
 
 struct MixerImpl {
@@ -78,6 +80,19 @@ struct MixerImpl {
     Voice voices[kVoiceCount];
     std::atomic<float> masterVolume{1.0f};
     std::vector<float> scratch;
+
+    // Excludes the audio callback while voice state is rearranged.
+    struct StreamLock {
+        SDL_AudioStream* stream;
+        explicit StreamLock(SDL_AudioStream* s) : stream(s) {
+            if (stream != nullptr) SDL_LockAudioStream(stream);
+        }
+        ~StreamLock() {
+            if (stream != nullptr) SDL_UnlockAudioStream(stream);
+        }
+        StreamLock(const StreamLock&) = delete;
+        StreamLock& operator=(const StreamLock&) = delete;
+    };
 
     static void callback(void* userdata, SDL_AudioStream* stream, int additionalAmount, int) {
         auto* self = static_cast<MixerImpl*>(userdata);
@@ -147,6 +162,9 @@ Mixer::Mixer() : impl_(std::make_unique<MixerImpl>()) {
         log::error("audio: failed to open output device: {}", SDL_GetError());
         return;
     }
+    // Preallocate the mix buffer so the audio callback never heap-allocates
+    // in steady state (assign() reuses capacity).
+    impl_->scratch.reserve(16384 * kChannels);
     SDL_ResumeAudioStreamDevice(impl_->stream);
     log::debug("audio: output open ({} Hz, {} ch)", kSampleRate, kChannels);
 }
@@ -165,6 +183,14 @@ Result<SoundRef> Mixer::createSound(const float* frames, size_t frameCount, int 
                                     int sampleRate) {
     if (channels < 1 || channels > 8 || frameCount == 0)
         return err("audio: invalid PCM ({} channels, {} frames)", channels, frameCount);
+    if (sampleRate < 1000 || sampleRate > 768000)
+        return err("audio: unsupported sample rate {}", sampleRate);
+    // Cap decoded size (~1 GB of stereo float) so a corrupt header can't
+    // request an absurd allocation.
+    const size_t outFrames =
+        static_cast<size_t>(static_cast<double>(frameCount) * kSampleRate / sampleRate);
+    if (outFrames > (1u << 27))
+        return err("audio: sound too long ({} frames at {} Hz)", frameCount, sampleRate);
     auto sound = std::make_unique<Sound>();
     sound->frames = normalizePcm(frames, frameCount, channels, sampleRate);
     std::lock_guard lock(impl_->soundsMutex);
@@ -207,12 +233,18 @@ Result<SoundRef> Mixer::load(const std::string& path) {
 }
 
 void Mixer::unload(SoundRef sound) {
-    // v1: sounds are freed with the mixer; a stopped ref just becomes inert.
     std::lock_guard lock(impl_->soundsMutex);
-    if (sound.id < impl_->sounds.size())
+    if (sound.id >= impl_->sounds.size() || impl_->sounds[sound.id] == nullptr) return;
+    {
+        // The callback must not be mid-mix on this sound while we free it.
+        MixerImpl::StreamLock streamLock(impl_->stream);
         for (Voice& voice : impl_->voices)
-            if (voice.sound == impl_->sounds[sound.id].get())
+            if (voice.sound == impl_->sounds[sound.id].get()) {
                 voice.active.store(false, std::memory_order_release);
+                voice.sound = nullptr;
+            }
+        impl_->sounds[sound.id].reset(); // slot stays; the ref becomes inert
+    }
 }
 
 VoiceRef Mixer::play(SoundRef soundRef, const PlayOptions& options) {
@@ -222,6 +254,12 @@ VoiceRef Mixer::play(SoundRef soundRef, const PlayOptions& options) {
         if (soundRef.id >= impl_->sounds.size()) return {};
         sound = impl_->sounds[soundRef.id].get();
     }
+    if (sound == nullptr) return {}; // unloaded
+
+    // Claim under the stream lock: without it the callback could be mid-mix
+    // on this voice (seen as inactive → finished) and clobber our fresh
+    // sound/position with its stale write-back.
+    MixerImpl::StreamLock streamLock(impl_->stream);
     for (uint32_t i = 0; i < kVoiceCount; ++i) {
         Voice& voice = impl_->voices[i];
         if (voice.active.load(std::memory_order_acquire)) continue;

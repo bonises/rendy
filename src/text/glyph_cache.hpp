@@ -68,7 +68,8 @@ private:
         bool dirty = false;
     };
 
-    Page& pageWithRoom(int width, int height, int* outX, int* outY);
+    /// nullptr when the glyph can't fit any page (larger than a page).
+    Page* pageWithRoom(int width, int height, int* outX, int* outY);
     void setPixelSize(uint32_t fontId, float pixelSize);
 
     gpu::TexturePool& textures_;

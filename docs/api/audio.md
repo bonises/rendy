@@ -11,7 +11,7 @@ Header: `rendy/audio/audio.hpp`, namespace `rendy::audio` — see the
 | `ok` | `bool ok() const` | |
 | `load` | `Result<SoundRef> load(path)` | .wav / .ogg, decoded at load |
 | `createSound` | `Result<SoundRef> createSound(const float* frames, size_t frameCount, int channels, int sampleRate)` | interleaved PCM |
-| `unload` | `void unload(SoundRef)` | stops voices using it |
+| `unload` | `void unload(SoundRef)` | stops voices using it and frees the PCM; the ref becomes inert |
 | `play` | `VoiceRef play(SoundRef, const PlayOptions& = {})` | invalid ref if all 32 voices busy |
 | `stop / stopAll` | | |
 | `setPaused` | `void setPaused(VoiceRef, bool)` | |

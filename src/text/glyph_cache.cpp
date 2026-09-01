@@ -64,8 +64,11 @@ void GlyphCache::loadDefaultFonts() {
 }
 
 void GlyphCache::setPixelSize(uint32_t fontId, float pixelSize) {
-    FT_Set_Pixel_Sizes(faces_[fontId], 0,
-                       static_cast<FT_UInt>(std::lround(std::max(pixelSize, 1.0f))));
+    // Clamp: absurd sizes (e.g. a runaway CSS font-size) would overflow the
+    // atlas and waste memory.
+    FT_Set_Pixel_Sizes(
+        faces_[fontId], 0,
+        static_cast<FT_UInt>(std::lround(std::clamp(pixelSize, 1.0f, 512.0f))));
 }
 
 TextMetrics GlyphCache::metrics(uint32_t fontId, float pixelSize) {
@@ -90,7 +93,13 @@ float GlyphCache::kerning(uint32_t fontId, float pixelSize, uint32_t leftGlyph,
     return static_cast<float>(delta.x) / 64.0f;
 }
 
-GlyphCache::Page& GlyphCache::pageWithRoom(int width, int height, int* outX, int* outY) {
+GlyphCache::Page* GlyphCache::pageWithRoom(int width, int height, int* outX, int* outY) {
+    // A glyph larger than a page can never pack; stbrp then reports failure
+    // with garbage coordinates, so reject it up front.
+    if (width + kGlyphPadding > kPageSize || height + kGlyphPadding > kPageSize) {
+        log::warn("glyph too large for atlas ({}x{} px), skipping", width, height);
+        return nullptr;
+    }
     for (auto& page : pages_) {
         stbrp_rect rect{};
         rect.w = static_cast<stbrp_coord>(width + kGlyphPadding);
@@ -98,7 +107,7 @@ GlyphCache::Page& GlyphCache::pageWithRoom(int width, int height, int* outX, int
         if (stbrp_pack_rects(&page->pack, &rect, 1) != 0) {
             *outX = rect.x;
             *outY = rect.y;
-            return *page;
+            return page.get();
         }
     }
     // New page. Initialize the packer in place — never before a move.
@@ -115,15 +124,16 @@ GlyphCache::Page& GlyphCache::pageWithRoom(int width, int height, int* outX, int
     stbrp_rect rect{};
     rect.w = static_cast<stbrp_coord>(width + kGlyphPadding);
     rect.h = static_cast<stbrp_coord>(height + kGlyphPadding);
-    stbrp_pack_rects(&newPage.pack, &rect, 1); // always fits in an empty page
+    if (stbrp_pack_rects(&newPage.pack, &rect, 1) == 0) return nullptr; // unreachable
     *outX = rect.x;
     *outY = rect.y;
-    return newPage;
+    return &newPage;
 }
 
 const GlyphInfo* GlyphCache::glyph(uint32_t fontId, float pixelSize, uint32_t codepoint) {
     if (!hasFont(fontId)) return nullptr;
-    const auto sizeKey = static_cast<uint32_t>(std::lround(std::max(pixelSize, 1.0f)));
+    const auto sizeKey =
+        static_cast<uint32_t>(std::lround(std::clamp(pixelSize, 1.0f, 512.0f)));
     const uint64_t key = glyphKey(fontId, sizeKey, codepoint);
     if (auto it = glyphs_.find(key); it != glyphs_.end()) return &it->second;
 
@@ -145,20 +155,24 @@ const GlyphInfo* GlyphCache::glyph(uint32_t fontId, float pixelSize, uint32_t co
     if (info.hasPixels) {
         int x = 0;
         int y = 0;
-        Page& page = pageWithRoom(static_cast<int>(bitmap.width), static_cast<int>(bitmap.rows),
-                                  &x, &y);
-        for (unsigned row = 0; row < bitmap.rows; ++row) {
-            const uint8_t* src = bitmap.buffer + row * static_cast<unsigned>(bitmap.pitch);
-            uint8_t* dst =
-                page.pixels.data() + (static_cast<size_t>(y) + row) * kPageSize + x;
-            std::memcpy(dst, src, bitmap.width);
+        Page* page = pageWithRoom(static_cast<int>(bitmap.width),
+                                  static_cast<int>(bitmap.rows), &x, &y);
+        if (page == nullptr) {
+            info.hasPixels = false; // renders as blank; advance still applies
+        } else {
+            for (unsigned row = 0; row < bitmap.rows; ++row) {
+                const uint8_t* src = bitmap.buffer + row * static_cast<unsigned>(bitmap.pitch);
+                uint8_t* dst =
+                    page->pixels.data() + (static_cast<size_t>(y) + row) * kPageSize + x;
+                std::memcpy(dst, src, bitmap.width);
+            }
+            page->dirty = true;
+            const float scale = 1.0f / kPageSize;
+            info.uvMin = {static_cast<float>(x) * scale, static_cast<float>(y) * scale};
+            info.uvMax = {(static_cast<float>(x) + info.size.x) * scale,
+                          (static_cast<float>(y) + info.size.y) * scale};
+            info.textureIndex = page->texture.index;
         }
-        page.dirty = true;
-        const float scale = 1.0f / kPageSize;
-        info.uvMin = {static_cast<float>(x) * scale, static_cast<float>(y) * scale};
-        info.uvMax = {(static_cast<float>(x) + info.size.x) * scale,
-                      (static_cast<float>(y) + info.size.y) * scale};
-        info.textureIndex = page.texture.index;
     }
 
     return &glyphs_.emplace(key, info).first->second;

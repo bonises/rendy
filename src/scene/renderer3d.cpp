@@ -63,8 +63,8 @@ struct FrustumPlanes {
         planes[1] = m[3] - m[0]; // right
         planes[2] = m[3] + m[1]; // bottom
         planes[3] = m[3] - m[1]; // top
-        planes[4] = m[3] + m[2]; // near (0..1 depth: w + z? see below)
-        planes[5] = m[3] - m[2]; // far
+        planes[4] = m[2];        // near (Vulkan/D3D clip: 0 <= z)
+        planes[5] = m[3] - m[2]; // far (z <= w)
         for (Vec4& plane : planes) {
             const float length = glm::length(Vec3(plane));
             if (length > 0.0f) plane /= length;

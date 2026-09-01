@@ -62,6 +62,16 @@ struct ContextImpl {
     Node* pressed = nullptr;
     Node* focused = nullptr;
 
+    // Rebuilt once per restyle pass, not once per element.
+    std::vector<const css::Stylesheet*> sheetPtrs;
+
+    void restyle() {
+        sheetPtrs.clear();
+        sheetPtrs.reserve(sheets.size());
+        for (const auto& sheet : sheets) sheetPtrs.push_back(&sheet);
+        restyleTree(root.get(), nullptr, nullptr);
+    }
+
     // ------------------------------------------------------------- helpers
 
     Node* newNode(std::string_view tag) {
@@ -209,9 +219,6 @@ struct ContextImpl {
             style.lineHeight = parentStyle->lineHeight;
         }
 
-        std::vector<const css::Stylesheet*> sheetPtrs;
-        sheetPtrs.reserve(sheets.size());
-        for (const auto& sheet : sheets) sheetPtrs.push_back(&sheet);
         css::resolveStyle(sheetPtrs, match, &node->inlineStyle, &style);
         node->style = std::move(style);
 
@@ -520,7 +527,7 @@ void Context::update() {
     impl_->checkHotReload();
     impl_->processInput();
     if (impl_->dirty) {
-        impl_->restyleTree(impl_->root.get(), nullptr, nullptr);
+        impl_->restyle();
         impl_->layout();
         impl_->dirty = false;
     }
@@ -529,7 +536,7 @@ void Context::update() {
 void Context::paint(Canvas canvas) {
     // Viewport may have resized since the last layout.
     if (impl_->root->rect.size != canvas.size()) {
-        impl_->restyleTree(impl_->root.get(), nullptr, nullptr);
+        impl_->restyle();
         impl_->layout();
     }
     impl_->paintNode(impl_->root.get(), canvas, 1.0f);
