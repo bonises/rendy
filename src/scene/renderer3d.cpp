@@ -325,7 +325,7 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
     pipelineInfo.pColorBlendState = &blend;
     pipelineInfo.pDynamicState = &dynamic;
     pipelineInfo.layout = meshLayout_;
-    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo, nullptr,
                                        &meshPipeline_));
     vkDestroyShaderModule(ctx_.device(), meshVert, nullptr);
     vkDestroyShaderModule(ctx_.device(), meshFrag, nullptr);
@@ -367,7 +367,7 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
     pipelineInfo.pMultisampleState = &singleSample;
     pipelineInfo.pDepthStencilState = nullptr;
     pipelineInfo.layout = tonemapLayout_;
-    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo, nullptr,
                                        &tonemapPipeline_));
     vkDestroyShaderModule(ctx_.device(), tonemapVert, nullptr);
     vkDestroyShaderModule(ctx_.device(), tonemapFrag, nullptr);
@@ -410,7 +410,7 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &noColor;
     pipelineInfo.layout = meshLayout_;
-    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo, nullptr,
                                        &shadowPipeline_));
     vkDestroyShaderModule(ctx_.device(), shadowVert, nullptr);
 }

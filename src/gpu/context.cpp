@@ -1,7 +1,11 @@
 #include "gpu/context.hpp"
 
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <vector>
 
 namespace rendy::gpu {
 namespace {
@@ -72,6 +76,19 @@ int scoreDevice(VkPhysicalDevice device, uint32_t* graphicsFamilyOut) {
     if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) score += 1000;
     else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) score += 100;
     return score;
+}
+
+std::filesystem::path pipelineCachePath() {
+    const char* xdg = std::getenv("XDG_CACHE_HOME");
+    std::filesystem::path base;
+    if (xdg != nullptr && *xdg != '\0') {
+        base = xdg;
+    } else if (const char* home = std::getenv("HOME"); home != nullptr) {
+        base = std::filesystem::path(home) / ".cache";
+    } else {
+        return {};
+    }
+    return base / "rendy" / "pipeline.cache";
 }
 
 } // namespace
@@ -214,11 +231,51 @@ Result<std::unique_ptr<Context>> Context::create(const ContextConfig& config) {
     allocatorInfo.pVulkanFunctions = &vmaFunctions;
     VK_CHECK(vmaCreateAllocator(&allocatorInfo, &ctx->allocator_));
 
+    // -------------------------------------------------------- pipeline cache
+    std::vector<char> cacheData;
+    if (const auto path = pipelineCachePath(); !path.empty()) {
+        std::ifstream file(path, std::ios::binary);
+        if (file) {
+            cacheData.assign(std::istreambuf_iterator<char>(file),
+                             std::istreambuf_iterator<char>());
+            log::debug("pipeline cache: loaded {} bytes from {}", cacheData.size(),
+                       path.string());
+        }
+    }
+    VkPipelineCacheCreateInfo cacheInfo{};
+    cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    cacheInfo.initialDataSize = cacheData.size();
+    cacheInfo.pInitialData = cacheData.data();
+    // A corrupt/mismatched blob makes creation fail; retry empty.
+    if (vkCreatePipelineCache(ctx->device_, &cacheInfo, nullptr, &ctx->pipelineCache_) !=
+        VK_SUCCESS) {
+        cacheInfo.initialDataSize = 0;
+        cacheInfo.pInitialData = nullptr;
+        VK_CHECK(
+            vkCreatePipelineCache(ctx->device_, &cacheInfo, nullptr, &ctx->pipelineCache_));
+    }
+
     return ctx;
 }
 
 Context::~Context() {
     if (device_ != VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
+    if (pipelineCache_ != VK_NULL_HANDLE) {
+        if (const auto path = pipelineCachePath(); !path.empty()) {
+            size_t dataSize = 0;
+            vkGetPipelineCacheData(device_, pipelineCache_, &dataSize, nullptr);
+            std::vector<char> data(dataSize);
+            if (dataSize > 0 &&
+                vkGetPipelineCacheData(device_, pipelineCache_, &dataSize, data.data()) ==
+                    VK_SUCCESS) {
+                std::error_code ec;
+                std::filesystem::create_directories(path.parent_path(), ec);
+                std::ofstream file(path, std::ios::binary | std::ios::trunc);
+                if (file) file.write(data.data(), static_cast<std::streamsize>(dataSize));
+            }
+        }
+        vkDestroyPipelineCache(device_, pipelineCache_, nullptr);
+    }
     if (allocator_ != VK_NULL_HANDLE) vmaDestroyAllocator(allocator_);
     if (device_ != VK_NULL_HANDLE) vkDestroyDevice(device_, nullptr);
     if (debugMessenger_ != VK_NULL_HANDLE)

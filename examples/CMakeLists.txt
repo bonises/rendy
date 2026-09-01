@@ -12,6 +12,7 @@ rendy_example(02_ui_gallery)
 rendy_example(03_text_editor_lite)
 rendy_example(04_scene3d)
 rendy_example(05_model_viewer)
+rendy_example(06_breakout)
 rendy_example(07_audio)
 
 # Runtime assets copied next to the binaries.

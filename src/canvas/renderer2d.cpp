@@ -146,7 +146,7 @@ Renderer2D::Renderer2D(gpu::Context& ctx, gpu::BindlessTable& bindless, VkFormat
     pipelineInfo.pColorBlendState = &blend;
     pipelineInfo.pDynamicState = &dynamic;
     pipelineInfo.layout = pipelineLayout_;
-    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo, nullptr,
                                        &pipeline_));
 
     vkDestroyShaderModule(ctx_.device(), vert, nullptr);

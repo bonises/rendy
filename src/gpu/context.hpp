@@ -33,6 +33,8 @@ public:
 
     uint32_t graphicsFamily() const { return graphicsFamily_; }
     VkQueue graphicsQueue() const { return graphicsQueue_; }
+    /// Persisted to disk ($XDG_CACHE_HOME/rendy) across runs.
+    VkPipelineCache pipelineCache() const { return pipelineCache_; }
 
     const VkPhysicalDeviceProperties& properties() const { return properties_; }
 
@@ -46,6 +48,7 @@ private:
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VmaAllocator allocator_ = VK_NULL_HANDLE;
+    VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
     uint32_t graphicsFamily_ = 0;
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties_{};
