@@ -66,7 +66,7 @@ cmake --build --preset release
 |---|---|
 | `01_hello` | window, rounded box, text |
 | `02_ui_gallery` | flexbox layouts, lists, hover states, live CSS reload |
-| `03_text_editor_lite` | scrollable text file viewer with cursor |
+| `03_text_editor_lite` | small but real text editor (typing, save) |
 | `04_scene3d` | primitives, moving lights, cascaded shadows |
 | `05_model_viewer` | glTF viewer with orbit camera |
 | `06_breakout` | mini-game: 3D + CSS HUD + sound |
