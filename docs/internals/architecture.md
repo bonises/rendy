@@ -116,6 +116,12 @@ mtime change (debug builds).
   (light matrix in push constants), sampled via compare samplers (PCF 3×3)
   and, for cubes, a manual depth-reference compare. Cascades use practical
   splits (λ=0.75), sphere-fit + texel snapping for stability.
+- **Forward+ clusters**: point/spot lights bin on the CPU into a 16×9×24
+  log-z cluster grid (conservative projected-AABB tile ranges; near-plane
+  crossers cover the full screen). Per-frame SSBOs hold (offset,count) per
+  cluster + a flat light index list (bindings 14/15); directional lights
+  sort first in the light buffer and are always shaded, the fragment shader
+  walks only its cluster for the rest. 1000 point lights ≈ 1900 fps release.
 - **Environment/IBL** (`scene/environment.*`): `setEnvironment` bakes an
   equirect HDR once with transient graphics pipelines — env cubemap (512³,
   mipped), cosine irradiance (32³), GGX-prefiltered chain (256³, 6 mips,

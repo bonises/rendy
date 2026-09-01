@@ -41,6 +41,10 @@ public:
                       gpu::FrameRing& frames);
 
     static constexpr uint32_t kMaxCascades = 4;
+    static constexpr uint32_t kClusterX = 16;
+    static constexpr uint32_t kClusterY = 9;
+    static constexpr uint32_t kClusterZ = 24;
+    static constexpr uint32_t kClusterCount = kClusterX * kClusterY * kClusterZ;
     static constexpr uint32_t kMaxSpotShadows = 8;
     static constexpr uint32_t kMaxPointShadows = 4;
 
@@ -145,7 +149,10 @@ private:
     MappedBuffer lightBuffers_[gpu::kFramesInFlight];
     MappedBuffer jointBuffers_[gpu::kFramesInFlight];
     MappedBuffer morphWeightBuffers_[gpu::kFramesInFlight];
+    MappedBuffer clusterBuffers_[gpu::kFramesInFlight];      // uvec2 per cluster
+    MappedBuffer clusterIndexBuffers_[gpu::kFramesInFlight]; // light index list
     VkBuffer boundMorphDeltaBuffer_ = VK_NULL_HANDLE; // scene's static delta SSBO
+    std::vector<std::vector<uint32_t>> clusterScratch_; // reused per frame
 };
 
 } // namespace rendy::detail

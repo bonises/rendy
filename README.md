@@ -37,7 +37,8 @@ int main() {
   flexbox (Yoga), `width`/`height`, padding/margin, `:hover`, hot reload of
   `.css` files — plus an equivalent typed C++ styling API.
 - **Text**: FreeType glyph atlas tuned for editor-crisp UI text.
-- **3D**: forward PBR (metallic-roughness), directional/point/spot lights,
+- **3D**: clustered forward+ PBR (metallic-roughness, ~1000 lights),
+  directional/point/spot lights,
   cascaded + cube shadow maps, HDRI skybox + image-based lighting, MSAA,
   HDR + tonemapping, transparency, all basic primitives, glTF 2.0 loading
   with skeletal animation (fastgltf).

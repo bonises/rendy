@@ -28,6 +28,7 @@ struct FrameUbo {
     Vec4 ambient;
     glm::uvec4 counts;
     Vec4 pointShadowParams;
+    Vec4 clusterParams; // tileW, tileH, sliceScale, sliceBias
 };
 
 constexpr uint32_t kNoJoints = 0xFFFFFFFFu;
@@ -104,7 +105,7 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     : ctx_(ctx), bindless_(bindless) {
     // Set 1: UBO + transforms/materials/lights/joints + 3 shadow map arrays
     // + environment cubes (8,9,10) + BRDF LUT (11) + morph deltas/weights.
-    VkDescriptorSetLayoutBinding bindings[14]{};
+    VkDescriptorSetLayoutBinding bindings[16]{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     for (uint32_t i = 1; i < 4; ++i)
@@ -121,16 +122,19 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     for (uint32_t i = 12; i < 14; ++i)
         bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT,
                        nullptr};
+    for (uint32_t i = 14; i < 16; ++i) // forward+ cluster data
+        bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 14;
+    layoutInfo.bindingCount = 16;
     layoutInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &frameSetLayout_));
 
     VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, gpu::kFramesInFlight},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * gpu::kFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 * gpu::kFramesInFlight},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * gpu::kFramesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
@@ -372,6 +376,10 @@ Renderer3D::~Renderer3D() {
     for (auto& buffer : jointBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     for (auto& buffer : morphWeightBuffers_)
+        if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
+    for (auto& buffer : clusterBuffers_)
+        if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
+    for (auto& buffer : clusterIndexBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     vkDestroySampler(ctx_.device(), resolveSampler_, nullptr);
     vkDestroyImageView(ctx_.device(), defaultEnv_.cubeView, nullptr);
@@ -726,50 +734,75 @@ void Renderer3D::ensureCapacity(MappedBuffer& buffer, size_t bytes, uint32_t slo
 }
 
 void Renderer3D::updateDescriptors(uint32_t slot) {
-    VkDescriptorBufferInfo bufferInfos[7] = {
-        {uboBuffers_[slot].buffer, 0, sizeof(FrameUbo)},
-        {transformBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
-        {materialBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
-        {lightBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
-        {jointBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
-        {boundMorphDeltaBuffer_, 0, VK_WHOLE_SIZE},
-        {morphWeightBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
-    };
-    // Environment bindings fall back to the built-in black maps.
     const EnvironmentData* env = boundEnvironment_;
-    const VkImageView envView = env ? env->environment.view : defaultEnv_.cubeView;
-    const VkImageView irrView = env ? env->irradiance.view : defaultEnv_.cubeView;
-    const VkImageView preView = env ? env->prefiltered.view : defaultEnv_.cubeView;
-    const VkImageView lutView = env ? env->brdfLutView : defaultEnv_.lutView;
     const VkSampler envSampler = env ? env->sampler : defaultEnv_.sampler;
 
-    VkDescriptorImageInfo imageInfos[7] = {
-        {shadowSampler_, cascadeShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
-        {shadowSampler_, spotShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
-        {pointShadowSampler_, pointShadows_.sampleView,
-         VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
-        {envSampler, envView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {envSampler, irrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {envSampler, preView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {envSampler, lutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+    struct BufferBind {
+        uint32_t binding;
+        VkDescriptorType type;
+        VkBuffer buffer;
+        VkDeviceSize size;
     };
-    VkWriteDescriptorSet writes[14]{};
-    for (uint32_t i = 0; i < 14; ++i) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = frameSets_[slot];
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        if (i < 4 || i == 7 || i >= 12) {
-            writes[i].descriptorType =
-                i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[i].pBufferInfo =
-                &bufferInfos[i == 7 ? 4 : (i == 12 ? 5 : (i == 13 ? 6 : i))];
-        } else {
-            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[i].pImageInfo = &imageInfos[i < 7 ? i - 4 : i - 5];
-        }
+    const BufferBind bufferBinds[] = {
+        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, uboBuffers_[slot].buffer, sizeof(FrameUbo)},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, transformBuffers_[slot].buffer, VK_WHOLE_SIZE},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, materialBuffers_[slot].buffer, VK_WHOLE_SIZE},
+        {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, lightBuffers_[slot].buffer, VK_WHOLE_SIZE},
+        {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, jointBuffers_[slot].buffer, VK_WHOLE_SIZE},
+        {12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, boundMorphDeltaBuffer_, VK_WHOLE_SIZE},
+        {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, morphWeightBuffers_[slot].buffer,
+         VK_WHOLE_SIZE},
+        {14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, clusterBuffers_[slot].buffer, VK_WHOLE_SIZE},
+        {15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, clusterIndexBuffers_[slot].buffer,
+         VK_WHOLE_SIZE},
+    };
+    struct ImageBind {
+        uint32_t binding;
+        VkSampler sampler;
+        VkImageView view;
+        VkImageLayout layout;
+    };
+    const ImageBind imageBinds[] = {
+        {4, shadowSampler_, cascadeShadows_.sampleView,
+         VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+        {5, shadowSampler_, spotShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+        {6, pointShadowSampler_, pointShadows_.sampleView,
+         VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+        {8, envSampler, env ? env->environment.view : defaultEnv_.cubeView,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {9, envSampler, env ? env->irradiance.view : defaultEnv_.cubeView,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {10, envSampler, env ? env->prefiltered.view : defaultEnv_.cubeView,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {11, envSampler, env ? env->brdfLutView : defaultEnv_.lutView,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+    };
+
+    VkDescriptorBufferInfo bufferInfos[std::size(bufferBinds)];
+    VkDescriptorImageInfo imageInfos[std::size(imageBinds)];
+    VkWriteDescriptorSet writes[std::size(bufferBinds) + std::size(imageBinds)]{};
+    uint32_t writeCount = 0;
+    for (size_t i = 0; i < std::size(bufferBinds); ++i) {
+        bufferInfos[i] = {bufferBinds[i].buffer, 0, bufferBinds[i].size};
+        VkWriteDescriptorSet& write = writes[writeCount++];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = frameSets_[slot];
+        write.dstBinding = bufferBinds[i].binding;
+        write.descriptorCount = 1;
+        write.descriptorType = bufferBinds[i].type;
+        write.pBufferInfo = &bufferInfos[i];
     }
-    vkUpdateDescriptorSets(ctx_.device(), 14, writes, 0, nullptr);
+    for (size_t i = 0; i < std::size(imageBinds); ++i) {
+        imageInfos[i] = {imageBinds[i].sampler, imageBinds[i].view, imageBinds[i].layout};
+        VkWriteDescriptorSet& write = writes[writeCount++];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = frameSets_[slot];
+        write.dstBinding = imageBinds[i].binding;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imageInfos[i];
+    }
+    vkUpdateDescriptorSets(ctx_.device(), writeCount, writes, 0, nullptr);
     descriptorsDirty_[slot] = false;
 }
 
@@ -983,14 +1016,15 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         Vec3 position;
         float range;
     };
-    std::vector<GpuLight> gpuLights;
+    std::vector<GpuLight> directionalLights;
+    std::vector<GpuLight> localLights; // point/spot: clustered
     std::vector<SpotShadowJob> spotJobs;
     std::vector<PointShadowJob> pointJobs;
     Vec3 sunDirection{0.0f, -1.0f, 0.0f};
     bool haveSun = false;
     uint32_t spotShadowCount = 0;
     uint32_t pointShadowCount = 0;
-    gpuLights.reserve(scene.lights.size());
+    localLights.reserve(scene.lights.size());
     for (size_t i = 0; i < scene.lights.size(); ++i) {
         const Light& light = scene.lights[i];
         const SceneNode& node = scene.nodes[scene.lightNodes[i]];
@@ -1041,10 +1075,96 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         }
         gpuLight.cone =
             Vec4{std::cos(light.innerCone), std::cos(light.outerCone), shadowIndex, 0.0f};
-        gpuLights.push_back(gpuLight);
+        if (light.type == Light::Type::Directional)
+            directionalLights.push_back(gpuLight);
+        else
+            localLights.push_back(gpuLight);
     }
+    // Directionals first (always shaded), then the clustered local lights.
+    std::vector<GpuLight> gpuLights = std::move(directionalLights);
+    const auto directionalCount = static_cast<uint32_t>(gpuLights.size());
+    gpuLights.insert(gpuLights.end(), localLights.begin(), localLights.end());
     ubo.counts.x = static_cast<uint32_t>(gpuLights.size());
+    ubo.counts.w = directionalCount;
     ubo.pointShadowParams.x = kPointShadowNear;
+
+    // ---- forward+ cluster assignment (CPU: lights are few, clusters cheap)
+    const float clusterNear = std::max(camera.nearPlane, 0.01f);
+    const float clusterFar = std::max(camera.farPlane, clusterNear + 1.0f);
+    const float logRatio = std::log2(clusterFar / clusterNear);
+    const float sliceScale = static_cast<float>(kClusterZ) / logRatio;
+    const float sliceBias =
+        static_cast<float>(kClusterZ) * std::log2(clusterNear) / logRatio;
+    ubo.clusterParams = {static_cast<float>(extent.width) / kClusterX,
+                         static_cast<float>(extent.height) / kClusterY, sliceScale, sliceBias};
+
+    clusterScratch_.resize(kClusterCount);
+    for (auto& list : clusterScratch_) list.clear();
+    const auto sliceOf = [&](float depth) {
+        return static_cast<int>(
+            std::floor(std::log2(std::max(depth, clusterNear)) * sliceScale - sliceBias));
+    };
+    for (uint32_t lightIndex = directionalCount; lightIndex < gpuLights.size(); ++lightIndex) {
+        const GpuLight& light = gpuLights[lightIndex];
+        const Vec3 viewPos = Vec3(ubo.view * Vec4{Vec3(light.positionType), 1.0f});
+        const float radius =
+            light.directionRange.w > 0.0f ? light.directionRange.w : clusterFar;
+        const float depth = -viewPos.z;
+        if (depth + radius < clusterNear || depth - radius > clusterFar) continue;
+
+        const int z0 = std::clamp(sliceOf(depth - radius), 0, static_cast<int>(kClusterZ) - 1);
+        const int z1 = std::clamp(sliceOf(depth + radius), 0, static_cast<int>(kClusterZ) - 1);
+
+        // Conservative x/y tile range from the projected view-space AABB.
+        int x0 = static_cast<int>(kClusterX) - 1, x1 = 0;
+        int y0 = static_cast<int>(kClusterY) - 1, y1 = 0;
+        bool fullExtent = false;
+        for (int corner = 0; corner < 8 && !fullExtent; ++corner) {
+            const Vec3 offset{(corner & 1) ? radius : -radius,
+                              (corner & 2) ? radius : -radius,
+                              (corner & 4) ? radius : -radius};
+            const Vec4 clip = ubo.proj * Vec4{viewPos + offset, 1.0f};
+            if (clip.w <= 0.001f) {
+                fullExtent = true; // crosses the near plane: cover everything
+                break;
+            }
+            const Vec2 ndc = Vec2(clip) / clip.w;
+            const int tx = static_cast<int>((ndc.x * 0.5f + 0.5f) * kClusterX);
+            const int ty = static_cast<int>((ndc.y * 0.5f + 0.5f) * kClusterY);
+            x0 = std::min(x0, tx);
+            x1 = std::max(x1, tx);
+            y0 = std::min(y0, ty);
+            y1 = std::max(y1, ty);
+        }
+        if (fullExtent) {
+            x0 = y0 = 0;
+            x1 = static_cast<int>(kClusterX) - 1;
+            y1 = static_cast<int>(kClusterY) - 1;
+        } else {
+            x0 = std::clamp(x0, 0, static_cast<int>(kClusterX) - 1);
+            x1 = std::clamp(x1, 0, static_cast<int>(kClusterX) - 1);
+            y0 = std::clamp(y0, 0, static_cast<int>(kClusterY) - 1);
+            y1 = std::clamp(y1, 0, static_cast<int>(kClusterY) - 1);
+            if (x1 < x0 || y1 < y0) continue; // fully off-screen
+        }
+        for (int z = z0; z <= z1; ++z)
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x)
+                    clusterScratch_[static_cast<size_t>(x) +
+                                    kClusterX * (static_cast<size_t>(y) +
+                                                 kClusterY * static_cast<size_t>(z))]
+                        .push_back(lightIndex);
+    }
+
+    // Flatten to (offset, count) + index list.
+    std::vector<glm::uvec2> clusterRanges(kClusterCount);
+    std::vector<uint32_t> clusterIndices;
+    for (uint32_t c = 0; c < kClusterCount; ++c) {
+        clusterRanges[c] = {static_cast<uint32_t>(clusterIndices.size()),
+                            static_cast<uint32_t>(clusterScratch_[c].size())};
+        clusterIndices.insert(clusterIndices.end(), clusterScratch_[c].begin(),
+                              clusterScratch_[c].end());
+    }
 
     // ---- cascaded shadow matrices for the sun
     if (haveSun) {
@@ -1124,6 +1244,15 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     if (!gpuLights.empty())
         std::memcpy(lightBuffers_[slot].mapped, gpuLights.data(),
                     gpuLights.size() * sizeof(GpuLight));
+    ensureCapacity(clusterBuffers_[slot], kClusterCount * sizeof(glm::uvec2), slot, frames);
+    std::memcpy(clusterBuffers_[slot].mapped, clusterRanges.data(),
+                kClusterCount * sizeof(glm::uvec2));
+    ensureCapacity(clusterIndexBuffers_[slot],
+                   std::max<size_t>(clusterIndices.size(), 1) * sizeof(uint32_t), slot,
+                   frames);
+    if (!clusterIndices.empty())
+        std::memcpy(clusterIndexBuffers_[slot].mapped, clusterIndices.data(),
+                    clusterIndices.size() * sizeof(uint32_t));
     ensureCapacity(jointBuffers_[slot],
                    std::max<size_t>(jointMatrices.size(), 1) * sizeof(Mat4), slot, frames);
     if (!jointMatrices.empty())

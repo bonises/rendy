@@ -165,65 +165,75 @@ void main() {
     // Double-sided-ish: flip the normal for back faces.
     const vec3 shadingNormal = gl_FrontFacing ? normal : -normal;
 
-    // ---- lights
+    // ---- lights (forward+: directional lights up front + this fragment's
+    // cluster list for point/spot)
+    const float clusterViewDepth = -(frame.view * vec4(vWorldPos, 1.0)).z;
+
+#define SHADE_LIGHT(light)                                                                   \
+    {                                                                                        \
+        const uint type = uint(light.positionType.w);                                        \
+        vec3 lightDir;                                                                       \
+        float attenuation = 1.0;                                                             \
+        if (type == LIGHT_DIRECTIONAL) {                                                     \
+            lightDir = normalize(-light.positionType.xyz);                                   \
+        } else {                                                                             \
+            const vec3 toLight = light.positionType.xyz - vWorldPos;                         \
+            const float distance = length(toLight);                                          \
+            lightDir = toLight / max(distance, 1e-4);                                        \
+            attenuation = 1.0 / max(distance * distance, 1e-4);                              \
+            const float range = light.directionRange.w;                                      \
+            if (range > 0.0) {                                                               \
+                const float factor = clamp(1.0 - pow(distance / range, 4.0), 0.0, 1.0);      \
+                attenuation *= factor * factor;                                              \
+            }                                                                                \
+            if (type == LIGHT_SPOT) {                                                        \
+                const float cosAngle = dot(-lightDir, normalize(light.directionRange.xyz));  \
+                attenuation *= clamp((cosAngle - light.cone.y) /                             \
+                                         max(light.cone.x - light.cone.y, 1e-4),             \
+                                     0.0, 1.0);                                              \
+            }                                                                                \
+        }                                                                                    \
+        const float NoL = max(dot(shadingNormal, lightDir), 0.0);                            \
+        if (NoL > 0.0 && attenuation > 0.0) {                                                \
+            const float shadowIndex = light.cone.z;                                          \
+            if (shadowIndex >= 0.0) {                                                        \
+                if (type == LIGHT_DIRECTIONAL)                                               \
+                    attenuation *= directionalShadow(vWorldPos, NoL);                        \
+                else if (type == LIGHT_SPOT)                                                 \
+                    attenuation *= spotShadow(uint(shadowIndex), vWorldPos, NoL);            \
+                else                                                                         \
+                    attenuation *= pointShadow(uint(shadowIndex), vWorldPos,                 \
+                                               light.positionType.xyz,                      \
+                                               light.directionRange.w);                     \
+            }                                                                                \
+            if (attenuation > 0.0) {                                                         \
+                const vec3 halfway = normalize(viewDir + lightDir);                          \
+                const float NoH = max(dot(shadingNormal, halfway), 0.0);                     \
+                const float VoH = max(dot(viewDir, halfway), 0.0);                           \
+                const vec3 fresnel = fresnelSchlick(f0, VoH);                                \
+                const float distribution = distributionGGX(NoH, roughness);                  \
+                const float visibility = visibilitySmith(NoV, NoL, roughness);               \
+                const vec3 specular = fresnel * (distribution * visibility);                 \
+                const vec3 diffuse = diffuseColor / PI;                                      \
+                const vec3 radiance =                                                        \
+                    light.colorIntensity.rgb * light.colorIntensity.w * attenuation;         \
+                radianceSum += (diffuse * (1.0 - fresnel) + specular) * radiance * NoL;      \
+            }                                                                                \
+        }                                                                                    \
+    }
+
     vec3 radianceSum = vec3(0.0);
-    for (uint i = 0u; i < frame.counts.x; ++i) {
+    // Directional lights (always shaded, stored first).
+    for (uint i = 0u; i < frame.counts.w; ++i) {
         const LightData light = lights[i];
-        const uint type = uint(light.positionType.w);
-
-        vec3 lightDir;
-        float attenuation = 1.0;
-        if (type == LIGHT_DIRECTIONAL) {
-            lightDir = normalize(-light.positionType.xyz); // xyz = direction
-        } else {
-            const vec3 toLight = light.positionType.xyz - vWorldPos;
-            const float distance = length(toLight);
-            lightDir = toLight / max(distance, 1e-4);
-            attenuation = 1.0 / max(distance * distance, 1e-4);
-            const float range = light.directionRange.w;
-            if (range > 0.0) {
-                // Windowed falloff so lights actually end at their range.
-                const float factor = clamp(1.0 - pow(distance / range, 4.0), 0.0, 1.0);
-                attenuation *= factor * factor;
-            }
-            if (type == LIGHT_SPOT) {
-                const float cosAngle = dot(-lightDir, normalize(light.directionRange.xyz));
-                attenuation *= clamp((cosAngle - light.cone.y) /
-                                         max(light.cone.x - light.cone.y, 1e-4),
-                                     0.0, 1.0);
-            }
-        }
-
-        const float NoL = max(dot(shadingNormal, lightDir), 0.0);
-        if (NoL <= 0.0 || attenuation <= 0.0) continue;
-
-        const float shadowIndex = light.cone.z;
-        if (shadowIndex >= 0.0) {
-            float shadow = 1.0;
-            if (type == LIGHT_DIRECTIONAL)
-                shadow = directionalShadow(vWorldPos, NoL);
-            else if (type == LIGHT_SPOT)
-                shadow = spotShadow(uint(shadowIndex), vWorldPos, NoL);
-            else
-                shadow = pointShadow(uint(shadowIndex), vWorldPos, light.positionType.xyz,
-                                     light.directionRange.w);
-            attenuation *= shadow;
-            if (attenuation <= 0.0) continue;
-        }
-
-        const vec3 halfway = normalize(viewDir + lightDir);
-        const float NoH = max(dot(shadingNormal, halfway), 0.0);
-        const float VoH = max(dot(viewDir, halfway), 0.0);
-
-        const vec3 fresnel = fresnelSchlick(f0, VoH);
-        const float distribution = distributionGGX(NoH, roughness);
-        const float visibility = visibilitySmith(NoV, NoL, roughness);
-
-        const vec3 specular = fresnel * (distribution * visibility);
-        const vec3 diffuse = diffuseColor / PI;
-
-        const vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation;
-        radianceSum += (diffuse * (1.0 - fresnel) + specular) * radiance * NoL;
+        SHADE_LIGHT(light);
+    }
+    // Clustered point/spot lights.
+    const uint cluster = rendyClusterIndex(gl_FragCoord.xy, clusterViewDepth);
+    const uvec2 clusterRange = clusters[cluster];
+    for (uint k = 0u; k < clusterRange.y; ++k) {
+        const LightData light = lights[clusterLightIndices[clusterRange.x + k]];
+        SHADE_LIGHT(light);
     }
 
     vec3 ambient;

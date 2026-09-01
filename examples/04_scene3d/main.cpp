@@ -14,12 +14,15 @@ int main(int argc, char** argv) {
     // 04_scene3d [instanceCount] [--no-vsync] — extra args spawn a field of
     // instanced cubes to stress the grouped-draw path.
     int stressCount = 0;
+    int lightCount = 0;
     bool vsync = true;
     const char* envPath = nullptr;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
         if (arg == "--no-vsync")
             vsync = false;
+        else if (arg == "--lights" && i + 1 < argc)
+            lightCount = std::atoi(argv[++i]);
         else if (arg.size() > 4 && arg.substr(arg.size() - 4) == ".hdr")
             envPath = argv[i];
         else
@@ -83,6 +86,22 @@ int main(int argc, char** argv) {
             t.position = {(i % side - side / 2) * 0.9f, 0.2f + 0.25f * ((i / side) % 3),
                           (i / side - side / 2) * 0.9f - 14.0f};
             scene.addMesh(cubeMesh, cubeMaterial, t);
+        }
+    }
+
+    if (lightCount > 0) {
+        // Forward+ stress: a carpet of small colored point lights.
+        const Color palette[] = {Color::rgb(0x89B4FA), Color::rgb(0xF38BA8),
+                                 Color::rgb(0xA6E3A1), Color::rgb(0xF9E2AF),
+                                 Color::rgb(0xCBA6F7), Color::rgb(0x94E2D5)};
+        const int side = std::max(1, static_cast<int>(std::sqrt(static_cast<float>(lightCount))));
+        for (int i = 0; i < lightCount; ++i) {
+            scene.addLight({.type = Light::Type::Point,
+                            .position = {(i % side - side / 2) * 1.4f, 0.6f,
+                                         (i / side - side / 2) * 1.4f},
+                            .color = palette[i % 6],
+                            .intensity = 1.5f,
+                            .range = 2.0f});
         }
     }
 

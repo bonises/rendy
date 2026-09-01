@@ -32,8 +32,9 @@ layout(set = 1, binding = 0) uniform FrameData {
     vec4 cascadeSplits; // view-space split depths (positive)
     vec4 viewPos;       // xyz camera position
     vec4 ambient;       // rgb flat ambient, w = environment intensity
-    uvec4 counts;       // x = light count, y = active cascades, z = has environment
+    uvec4 counts;       // x = light count, y = cascades, z = has env, w = directional count
     vec4 pointShadowParams; // x = point shadow near plane, y = prefiltered env max mip
+    vec4 clusterParams;     // x,y = tile size px, z = z-slice scale, w = z-slice bias
 } frame;
 
 layout(std430, set = 1, binding = 1) readonly buffer Transforms { mat4 transforms[]; };
@@ -47,6 +48,22 @@ struct MorphDelta {
 };
 layout(std430, set = 1, binding = 12) readonly buffer MorphDeltas { MorphDelta morphDeltas[]; };
 layout(std430, set = 1, binding = 13) readonly buffer MorphWeights { float morphWeights[]; };
+// Forward+ clusters: per-cluster (offset, count) into the light index list.
+layout(std430, set = 1, binding = 14) readonly buffer Clusters { uvec2 clusters[]; };
+layout(std430, set = 1, binding = 15) readonly buffer ClusterIndices { uint clusterLightIndices[]; };
+
+const uint CLUSTER_X = 16u;
+const uint CLUSTER_Y = 9u;
+const uint CLUSTER_Z = 24u;
+
+uint rendyClusterIndex(vec2 fragCoord, float viewDepth) {
+    uvec2 tile = uvec2(fragCoord / frame.clusterParams.xy);
+    tile = min(tile, uvec2(CLUSTER_X - 1u, CLUSTER_Y - 1u));
+    const float slice =
+        log2(max(viewDepth, 0.01)) * frame.clusterParams.z - frame.clusterParams.w;
+    const uint z = uint(clamp(slice, 0.0, float(CLUSTER_Z - 1u)));
+    return tile.x + CLUSTER_X * (tile.y + CLUSTER_Y * z);
+}
 
 const uint NO_JOINTS = 0xFFFFFFFFu;
 
