@@ -73,8 +73,9 @@ public:
     void removeNode(NodeId node);
 
     // ---- access ----------------------------------------------------------
-    // Invalid/foreign NodeIds degrade safely: setters no-op with a warning,
-    // reference getters return an inert dummy.
+    // NodeIds are plain indices: out-of-range or removed ids degrade safely
+    // (setters no-op, reference getters return an inert dummy), but an id
+    // from ANOTHER Scene cannot be detected — keep ids with their scene.
 
     [[nodiscard]] bool validNode(NodeId id) const;
     [[nodiscard]] NodeRef node(NodeId id) { return NodeRef(this, id); }

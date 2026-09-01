@@ -201,23 +201,40 @@ struct TransformAccumulator {
         }
     }
 
-    /// Writes the blended result onto `transform` (untouched channels keep
-    /// their current values).
-    void apply(Transform& transform) const {
-        if (translationWeight > 1e-5f) transform.position = translation / translationWeight;
+    /// Writes the blended result onto `transform`. Channels with total
+    /// weight below 1 blend toward `base` (the authored pose) — that makes
+    /// a fading-out clip ease back instead of freezing, and weights above 1
+    /// normalize. Untouched channels keep their current values.
+    void apply(Transform& transform, const Transform& base) const {
+        if (translationWeight > 1e-5f) {
+            const float fill = std::max(0.0f, 1.0f - translationWeight);
+            transform.position =
+                (translation + base.position * fill) / (translationWeight + fill);
+        }
         if (rotationWeight > 1e-5f) {
-            const Vec4 q = rotation / rotationWeight;
+            const float fill = std::max(0.0f, 1.0f - rotationWeight);
+            Vec4 baseQ{base.rotation.x, base.rotation.y, base.rotation.z, base.rotation.w};
+            if (glm::dot(baseQ, rotation) < 0.0f) baseQ = -baseQ;
+            const Vec4 q = (rotation + baseQ * fill) / (rotationWeight + fill);
             const Quat quat{q.w, q.x, q.y, q.z};
             const float length = glm::length(quat);
             if (length > 1e-5f) transform.rotation = quat / length;
         }
-        if (scaleWeight > 1e-5f) transform.scale = scale / scaleWeight;
+        if (scaleWeight > 1e-5f) {
+            const float fill = std::max(0.0f, 1.0f - scaleWeight);
+            transform.scale = (scale + base.scale * fill) / (scaleWeight + fill);
+        }
     }
 
-    void applyMorph(std::vector<float>& target) const {
+    void applyMorph(std::vector<float>& target, const std::vector<float>& base) const {
         if (morphWeight <= 1e-5f) return;
         if (target.size() < morph.size()) target.resize(morph.size(), 0.0f);
-        for (size_t i = 0; i < morph.size(); ++i) target[i] = morph[i] / morphWeight;
+        const float fill = std::max(0.0f, 1.0f - morphWeight);
+        const float denom = morphWeight + fill;
+        for (size_t i = 0; i < morph.size(); ++i) {
+            const float baseValue = i < base.size() ? base[i] : 0.0f;
+            target[i] = (morph[i] + baseValue * fill) / denom;
+        }
     }
 };
 

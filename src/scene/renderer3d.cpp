@@ -1156,7 +1156,8 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
                         .push_back(lightIndex);
     }
 
-    // Flatten to (offset, count) + index list.
+    // Flatten to (offset, count) + index list. No hard cap, but huge lists
+    // (many unbounded-range lights) make fragments expensive — warn once.
     std::vector<glm::uvec2> clusterRanges(kClusterCount);
     std::vector<uint32_t> clusterIndices;
     for (uint32_t c = 0; c < kClusterCount; ++c) {
@@ -1164,6 +1165,15 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
                             static_cast<uint32_t>(clusterScratch_[c].size())};
         clusterIndices.insert(clusterIndices.end(), clusterScratch_[c].begin(),
                               clusterScratch_[c].end());
+    }
+    if (clusterIndices.size() > 500'000) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            log::warn("forward+: {} cluster light entries — give large point/spot lights a "
+                      "finite .range to keep shading cheap",
+                      clusterIndices.size());
+        }
     }
 
     // ---- cascaded shadow matrices for the sun

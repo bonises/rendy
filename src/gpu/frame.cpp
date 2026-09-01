@@ -40,7 +40,7 @@ FrameRing::FrameRing(Context& ctx, Swapchain& swapchain) : ctx_(ctx), swapchain_
 
 FrameRing::~FrameRing() {
     ctx_.waitIdle();
-    for (size_t i = 0; i < frames_.size(); ++i) flushDeletions(i);
+    flushAll();
     for (PerFrame& frame : frames_) {
         vkDestroySemaphore(ctx_.device(), frame.acquireSemaphore, nullptr);
         vkDestroyCommandPool(ctx_.device(), frame.pool, nullptr);
@@ -49,13 +49,25 @@ FrameRing::~FrameRing() {
     vkDestroySemaphore(ctx_.device(), timeline_, nullptr);
 }
 
-void FrameRing::flushDeletions(size_t slotIndex) {
-    for (auto& fn : frames_[slotIndex].deletions) fn();
-    frames_[slotIndex].deletions.clear();
+void FrameRing::flushCompleted() {
+    uint64_t completed = 0;
+    VK_CHECK(vkGetSemaphoreCounterValue(ctx_.device(), timeline_, &completed));
+    while (!deletions_.empty() && deletions_.front().retireValue <= completed) {
+        deletions_.front().fn();
+        deletions_.pop_front();
+    }
+}
+
+void FrameRing::flushAll() {
+    // Only after waitIdle: every pending item is safe regardless of stamp.
+    for (auto& deletion : deletions_) deletion.fn();
+    deletions_.clear();
 }
 
 void FrameRing::defer(std::function<void()> fn) {
-    frames_[slot()].deletions.push_back(std::move(fn));
+    // The frame currently being recorded (or the next to record) signals
+    // frameCounter_ + 1; anything older has a smaller value.
+    deletions_.push_back({frameCounter_ + 1, std::move(fn)});
 }
 
 FrameRing::FrameInfo FrameRing::begin() {
@@ -71,7 +83,7 @@ FrameRing::FrameInfo FrameRing::begin() {
         waitInfo.pValues = &waitValue;
         VK_CHECK(vkWaitSemaphores(ctx_.device(), &waitInfo, UINT64_MAX));
     }
-    flushDeletions(slot());
+    flushCompleted();
 
     // Acquire, recreating the swapchain when it's stale. If we still can't
     // acquire after a recreate, skip the frame instead of submitting with an

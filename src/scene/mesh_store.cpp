@@ -51,6 +51,9 @@ void MeshStore::ensureRoom(size_t vertexBytes, size_t indexBytes) {
     while (newIndexCapacity < neededIndex) newIndexCapacity *= 2;
 
     // Grow by copy on the GPU. Blocking is fine: mesh creation is load-time.
+    // NOTE: destroying the old buffers right after is safe ONLY because the
+    // Uploader submits on the same graphics queue and waits on a fence —
+    // revisit if a dedicated transfer queue is introduced.
     VkBuffer newVertex;
     VmaAllocation newVertexAlloc;
     VkBuffer newIndex;

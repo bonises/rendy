@@ -98,23 +98,56 @@ TEST_CASE("clips that do not start at t=0 play their whole window",
 
 TEST_CASE("blend accumulator averages with normalized weights",
           "[scene][animation][blend]") {
+    // Two clips whose weights sum to 1: pure weighted average.
     TransformAccumulator accumulator;
     accumulator.add(AnimationChannel::Path::Translation, {0, 0, 0, 0}, 0.75f);
     accumulator.add(AnimationChannel::Path::Translation, {10, 0, 0, 0}, 0.25f);
     Transform transform;
-    accumulator.apply(transform);
+    accumulator.apply(transform, Transform{});
     REQUIRE(transform.position.x == Approx(2.5f));
 
-    // A single clip at low weight still gives its full pose (normalized).
+    // Weights above 1 normalize.
+    TransformAccumulator heavy;
+    heavy.add(AnimationChannel::Path::Translation, {10, 0, 0, 0}, 1.0f);
+    heavy.add(AnimationChannel::Path::Translation, {20, 0, 0, 0}, 1.0f);
+    Transform heavyTransform;
+    heavy.apply(heavyTransform, Transform{});
+    REQUIRE(heavyTransform.position.x == Approx(15.0f));
+
+    // A single clip below weight 1 blends toward the BASE pose (Codex round
+    // 2, finding 2: a fading sparse channel must ease back, not freeze).
     TransformAccumulator solo;
-    solo.add(AnimationChannel::Path::Scale, {2, 2, 2, 0}, 0.3f);
+    solo.add(AnimationChannel::Path::Scale, {2, 2, 2, 0}, 0.25f);
+    Transform base;
+    base.scale = Vec3{1.0f};
     Transform soloTransform;
-    solo.apply(soloTransform);
-    REQUIRE(soloTransform.scale.x == Approx(2.0f));
+    solo.apply(soloTransform, base);
+    REQUIRE(soloTransform.scale.x == Approx(0.25f * 2.0f + 0.75f * 1.0f));
 
     // Untouched channels keep their existing values.
     REQUIRE(soloTransform.position.x == Approx(0.0f));
     REQUIRE(soloTransform.rotation.w == Approx(1.0f));
+}
+
+TEST_CASE("sparse channel fade-out eases to the base pose",
+          "[scene][animation][blend]") {
+    // Clip A animates a node's translation; clip B (the crossfade target)
+    // has no channel there. As A's weight → 0, the node returns to base.
+    const Vec4 animated{10, 0, 0, 0};
+    Transform base;
+    base.position = Vec3{2, 0, 0};
+
+    float previous = 10.0f;
+    for (float weight : {0.75f, 0.5f, 0.25f, 0.05f}) {
+        TransformAccumulator accumulator;
+        accumulator.add(AnimationChannel::Path::Translation, animated, weight);
+        Transform transform;
+        accumulator.apply(transform, base);
+        const float expected = weight * 10.0f + (1.0f - weight) * 2.0f;
+        REQUIRE(transform.position.x == Approx(expected));
+        REQUIRE(transform.position.x < previous); // strictly easing toward 2
+        previous = transform.position.x;
+    }
 }
 
 TEST_CASE("quaternion blending is hemisphere-safe and normalized",
@@ -125,7 +158,7 @@ TEST_CASE("quaternion blending is hemisphere-safe and normalized",
     // Same 90° rotation but negated quaternion (other hemisphere).
     accumulator.add(AnimationChannel::Path::Rotation, {-q90.x, -q90.y, -q90.z, -q90.w}, 0.5f);
     Transform transform;
-    accumulator.apply(transform);
+    accumulator.apply(transform, Transform{});
     REQUIRE(glm::length(transform.rotation) == Approx(1.0f).margin(1e-5));
     // Result should be ~45° around Z, not a degenerate mix.
     const Vec3 rotated = transform.rotation * Vec3{1, 0, 0};

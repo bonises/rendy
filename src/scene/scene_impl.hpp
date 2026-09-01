@@ -36,13 +36,15 @@ struct GpuLight {
 
 struct SceneNode {
     Transform local;
+    Transform baseLocal; ///< authored pose; blend target when weights < 1
     uint32_t parent = UINT32_MAX;
     Mat4 world{1.0f};
     MeshHandle mesh;         // invalid = no mesh
     MaterialHandle material;
     int32_t lightIndex = -1; // into lights
     int32_t skinIndex = -1;  // into skins; >= 0 = skinned mesh
-    std::vector<float> morphWeights; // per morph target (empty = all zero)
+    std::vector<float> morphWeights;     // per morph target (empty = all zero)
+    std::vector<float> baseMorphWeights; // authored weights (blend base)
     bool alive = true;
 };
 

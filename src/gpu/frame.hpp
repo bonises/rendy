@@ -7,6 +7,7 @@
 #include "gpu/swapchain.hpp"
 
 #include <array>
+#include <deque>
 #include <functional>
 #include <vector>
 
@@ -35,7 +36,9 @@ public:
     /// Ends the command buffer, submits, presents.
     void end();
 
-    /// Run `fn` once the GPU is done with the current frame slot.
+    /// Run `fn` once every frame that could reference the resource has
+    /// finished on the GPU — safe to call at any point, during recording or
+    /// between frames.
     void defer(std::function<void()> fn);
 
     /// Index of the current frame slot (0..kFramesInFlight-1), for per-frame
@@ -44,8 +47,6 @@ public:
     uint64_t frameCounter() const { return frameCounter_; }
 
 private:
-    void flushDeletions(size_t slotIndex);
-
     Context& ctx_;
     Swapchain& swapchain_;
 
@@ -53,8 +54,17 @@ private:
         VkCommandPool pool = VK_NULL_HANDLE;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         VkSemaphore acquireSemaphore = VK_NULL_HANDLE;
-        std::vector<std::function<void()>> deletions;
     };
+    // Deferred deletions, each stamped with the timeline value that must be
+    // reached before the resource can really die (frameCounter_ + 1 covers
+    // both the frame being recorded and everything submitted earlier).
+    struct PendingDeletion {
+        uint64_t retireValue;
+        std::function<void()> fn;
+    };
+    std::deque<PendingDeletion> deletions_;
+    void flushCompleted();
+    void flushAll();
     std::array<PerFrame, kFramesInFlight> frames_;
     // One render-finished semaphore per swapchain image (present waits on it).
     std::vector<VkSemaphore> renderFinished_;

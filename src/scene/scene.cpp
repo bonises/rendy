@@ -72,6 +72,7 @@ NodeId Scene::addMesh(MeshHandle mesh, MaterialHandle material, const Transform&
     }
     detail::SceneNode node;
     node.local = transform;
+    node.baseLocal = transform;
     node.mesh = mesh;
     node.material = material;
     impl_->nodes.push_back(node);
@@ -81,6 +82,7 @@ NodeId Scene::addMesh(MeshHandle mesh, MaterialHandle material, const Transform&
 NodeId Scene::addNode(const Transform& transform, NodeId parent) {
     detail::SceneNode node;
     node.local = transform;
+    node.baseLocal = transform;
     node.parent = parent.valid() ? parent.index : UINT32_MAX;
     impl_->nodes.push_back(node);
     return NodeId{static_cast<uint32_t>(impl_->nodes.size() - 1)};
@@ -89,6 +91,7 @@ NodeId Scene::addNode(const Transform& transform, NodeId parent) {
 NodeId Scene::addLight(const Light& light, const Transform& transform) {
     detail::SceneNode node;
     node.local = transform;
+    node.baseLocal = transform;
     node.lightIndex = static_cast<int32_t>(impl_->lights.size());
     impl_->nodes.push_back(node);
     const NodeId id{static_cast<uint32_t>(impl_->nodes.size() - 1)};
@@ -100,7 +103,7 @@ NodeId Scene::addLight(const Light& light, const Transform& transform) {
 // A NodeId is only meaningful for the Scene that produced it; foreign or
 // stale ids must degrade safely, not index out of bounds.
 bool Scene::validNode(NodeId id) const {
-    return id.valid() && id.index < impl_->nodes.size();
+    return id.valid() && id.index < impl_->nodes.size() && impl_->nodes[id.index].alive;
 }
 
 void Scene::setParent(NodeId child, NodeId parent) {
@@ -322,9 +325,10 @@ void Scene::updateAnimations(float dt) {
 
     if (!anySamples) return;
     for (uint32_t i = 0; i < scratch.size(); ++i) {
-        scratch[i].apply(impl_->nodes[i].local);
+        scratch[i].apply(impl_->nodes[i].local, impl_->nodes[i].baseLocal);
         if (scratch[i].morphWeight > 0.0f) {
-            scratch[i].applyMorph(impl_->nodes[i].morphWeights);
+            scratch[i].applyMorph(impl_->nodes[i].morphWeights,
+                                  impl_->nodes[i].baseMorphWeights);
             // Mirror onto mesh primitive children (they hold the meshes).
             for (uint32_t child = 0; child < impl_->nodes.size(); ++child)
                 if (impl_->nodes[child].parent == i && impl_->nodes[child].mesh.valid())

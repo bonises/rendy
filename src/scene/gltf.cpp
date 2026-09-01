@@ -321,7 +321,9 @@ struct GltfLoader {
                     pendingSkins.emplace_back(primitiveNode.index, *node.skinIndex);
                 if (!initialWeights.empty()) {
                     scene.nodes[primitiveNode.index].morphWeights = initialWeights;
+                    scene.nodes[primitiveNode.index].baseMorphWeights = initialWeights;
                     scene.nodes[id.index].morphWeights = initialWeights;
+                    scene.nodes[id.index].baseMorphWeights = initialWeights;
                 }
             }
         }
