@@ -61,6 +61,25 @@ struct ContextImpl {
     Node* hovered = nullptr;
     Node* pressed = nullptr;
     Node* focused = nullptr;
+    Node* draggingScroller = nullptr;
+    float dragGrabOffset = 0.0f; // px from thumb top to grab point
+
+    struct ThumbGeometry {
+        float trackTop, trackHeight, thumbTop, thumbHeight, maxScroll;
+    };
+    static ThumbGeometry thumbGeometry(const Node* node) {
+        ThumbGeometry g{};
+        g.trackTop = node->rect.top() + 2.0f;
+        g.trackHeight = node->rect.size.y - 4.0f;
+        g.thumbHeight =
+            std::max(24.0f, g.trackHeight * node->rect.size.y / node->contentSize.y);
+        g.maxScroll = std::max(0.0f, node->contentSize.y - node->rect.size.y);
+        const float t =
+            g.maxScroll > 0.0f ? std::clamp(node->scrollOffset.y / g.maxScroll, 0.0f, 1.0f)
+                               : 0.0f;
+        g.thumbTop = g.trackTop + t * (g.trackHeight - g.thumbHeight);
+        return g;
+    }
 
     // Rebuilt once per restyle pass, not once per element.
     std::vector<const css::Stylesheet*> sheetPtrs;
@@ -106,6 +125,7 @@ struct ContextImpl {
         if (hovered == node) hovered = nullptr;
         if (pressed == node) pressed = nullptr;
         if (focused == node) focused = nullptr;
+        if (draggingScroller == node) draggingScroller = nullptr;
         for (auto& child : node->children) forgetNode(child.get());
     }
 
@@ -146,6 +166,39 @@ struct ContextImpl {
             setPseudo(hovered, css::kPseudoHover, false);
             hovered = hit;
             setPseudo(hovered, css::kPseudoHover, true);
+        }
+        // Scrollbar dragging: grabbing the right-edge strip of a scrollable
+        // element moves its thumb instead of clicking.
+        if (input.mousePressed(MouseButton::Left) && hit != nullptr) {
+            if (Node* scroller = scrollTarget(hit)) {
+                const Vec2 mouse = input.mousePos();
+                if (mouse.x >= scroller->rect.right() - 12.0f &&
+                    mouse.x <= scroller->rect.right() &&
+                    scroller->rect.contains(mouse)) {
+                    const ThumbGeometry g = thumbGeometry(scroller);
+                    draggingScroller = scroller;
+                    dragGrabOffset =
+                        (mouse.y >= g.thumbTop && mouse.y <= g.thumbTop + g.thumbHeight)
+                            ? mouse.y - g.thumbTop
+                            : g.thumbHeight * 0.5f; // jump-to-position grab
+                }
+            }
+        }
+        if (draggingScroller != nullptr) {
+            if (input.mouseDown(MouseButton::Left)) {
+                const ThumbGeometry g = thumbGeometry(draggingScroller);
+                const float range = g.trackHeight - g.thumbHeight;
+                if (range > 0.0f && g.maxScroll > 0.0f) {
+                    const float t = std::clamp(
+                        (input.mousePos().y - dragGrabOffset - g.trackTop) / range, 0.0f,
+                        1.0f);
+                    draggingScroller->scrollOffset.y = t * g.maxScroll;
+                    markDirty();
+                }
+            } else {
+                draggingScroller = nullptr;
+            }
+            return; // dragging swallows clicks/hover updates below
         }
         if (input.mousePressed(MouseButton::Left)) {
             pressed = hit;
@@ -345,17 +398,12 @@ struct ContextImpl {
         // Scrollbar thumb for scrollable overflow.
         if (s.overflow == Overflow::Scroll &&
             node->contentSize.y > node->rect.size.y + 0.5f) {
-            const float trackHeight = node->rect.size.y - 4.0f;
-            const float thumbHeight = std::max(
-                24.0f, trackHeight * node->rect.size.y / node->contentSize.y);
-            const float maxScroll = node->contentSize.y - node->rect.size.y;
-            const float t =
-                maxScroll > 0.0f ? std::clamp(node->scrollOffset.y / maxScroll, 0.0f, 1.0f)
-                                 : 0.0f;
-            const float thumbY = node->rect.top() + 2.0f + t * (trackHeight - thumbHeight);
-            canvas.drawRect({{node->rect.right() - 8.0f, thumbY}, {5.0f, thumbHeight}},
-                            {.color = s.textColor.fade(0.25f * opacity),
-                             .cornerRadius = 2.5f});
+            const ThumbGeometry g = thumbGeometry(node);
+            const bool active = node->ctx->draggingScroller == node;
+            canvas.drawRect(
+                {{node->rect.right() - 8.0f, g.thumbTop}, {5.0f, g.thumbHeight}},
+                {.color = s.textColor.fade((active ? 0.5f : 0.25f) * opacity),
+                 .cornerRadius = 2.5f});
         }
 
         if (clips) canvas.popClip();
