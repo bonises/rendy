@@ -22,7 +22,9 @@ detail::GpuMaterial toGpu(const MaterialDesc& desc) {
     material.emissiveMetallic = Vec4{srgbToLinear(desc.emissive) *
                                          (desc.emissive.a > 0.0f ? desc.emissive.a : 1.0f),
                                      desc.metallic};
-    material.params = Vec4{desc.roughness, desc.normalScale, desc.occlusionStrength, 0.0f};
+    material.params =
+        Vec4{desc.roughness, desc.normalScale, desc.occlusionStrength,
+             desc.alphaMode == AlphaMode::Mask ? desc.alphaCutoff : 0.0f};
     material.maps = {desc.baseColorTexture.index, desc.metallicRoughnessTexture.index,
                      desc.normalTexture.index, desc.emissiveTexture.index};
     material.maps2 = {desc.occlusionTexture.index, 0u, 0u, 0u};
@@ -37,6 +39,7 @@ Scene::Scene(App& app) : impl_(std::make_unique<detail::SceneImpl>()) {
         std::make_unique<detail::MeshStore>(*impl_->app->gpu, *impl_->app->uploader);
     // Material 0: neutral default.
     impl_->materials.push_back(toGpu(MaterialDesc{.baseColor = Color::rgb(0xCCCCCC)}));
+    impl_->materialAlphaModes.push_back(AlphaMode::Opaque);
 }
 
 Scene::Scene(Scene&&) noexcept = default;
@@ -52,6 +55,7 @@ MeshHandle Scene::createMesh(const MeshData& data) { return impl_->meshes->add(d
 
 MaterialHandle Scene::createMaterial(const MaterialDesc& desc) {
     impl_->materials.push_back(toGpu(desc));
+    impl_->materialAlphaModes.push_back(desc.alphaMode);
     return MaterialHandle{static_cast<uint32_t>(impl_->materials.size() - 1)};
 }
 

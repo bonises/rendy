@@ -106,6 +106,10 @@ struct GltfLoader {
                                             material.emissiveFactor[1] * material.emissiveStrength,
                                             material.emissiveFactor[2] * material.emissiveStrength,
                                             pbr.metallicFactor};
+            const AlphaMode alphaMode =
+                material.alphaMode == fastgltf::AlphaMode::Blend ? AlphaMode::Blend
+                : material.alphaMode == fastgltf::AlphaMode::Mask ? AlphaMode::Mask
+                                                                  : AlphaMode::Opaque;
             gpuMaterial.params = {pbr.roughnessFactor,
                                   material.normalTexture.has_value()
                                       ? material.normalTexture->scale
@@ -113,7 +117,7 @@ struct GltfLoader {
                                   material.occlusionTexture.has_value()
                                       ? material.occlusionTexture->strength
                                       : 1.0f,
-                                  0.0f};
+                                  alphaMode == AlphaMode::Mask ? material.alphaCutoff : 0.0f};
 
             gpuMaterial.maps.x = textureFor(pbr.baseColorTexture, true).index;
             gpuMaterial.maps.y = textureFor(pbr.metallicRoughnessTexture, false).index;
@@ -130,6 +134,7 @@ struct GltfLoader {
             }
 
             scene.materials.push_back(gpuMaterial);
+            scene.materialAlphaModes.push_back(alphaMode);
             materialIds.push_back(static_cast<uint32_t>(scene.materials.size() - 1));
         }
     }

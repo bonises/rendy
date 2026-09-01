@@ -6,6 +6,7 @@
 #include "shaders/tonemap_frag_spv.h"
 #include "shaders/tonemap_vert_spv.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace rendy::detail {
@@ -211,6 +212,7 @@ Renderer3D::~Renderer3D() {
     for (auto& buffer : lightBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     vkDestroySampler(ctx_.device(), resolveSampler_, nullptr);
+    vkDestroyPipeline(ctx_.device(), meshBlendPipeline_, nullptr);
     vkDestroyPipeline(ctx_.device(), meshPipeline_, nullptr);
     vkDestroyPipelineLayout(ctx_.device(), meshLayout_, nullptr);
     vkDestroyPipeline(ctx_.device(), tonemapPipeline_, nullptr);
@@ -327,6 +329,32 @@ void Renderer3D::createPipelines(VkFormat swapchainFormat) {
     pipelineInfo.layout = meshLayout_;
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo, nullptr,
                                        &meshPipeline_));
+
+    // Blend variant for AlphaMode::Blend: alpha blending, depth test but no
+    // depth write (drawn back-to-front after the opaque pass).
+    VkPipelineColorBlendAttachmentState blendOn = blendAttachment;
+    blendOn.blendEnable = VK_TRUE;
+    blendOn.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blendOn.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendOn.colorBlendOp = VK_BLEND_OP_ADD;
+    blendOn.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendOn.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendOn.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo blendState = blend;
+    blendState.pAttachments = &blendOn;
+    VkPipelineDepthStencilStateCreateInfo blendDepth = depthStencil;
+    blendDepth.depthWriteEnable = VK_FALSE;
+    VkPipelineRasterizationStateCreateInfo blendRaster = raster;
+    blendRaster.cullMode = VK_CULL_MODE_NONE; // see glass from both sides
+    pipelineInfo.pColorBlendState = &blendState;
+    pipelineInfo.pDepthStencilState = &blendDepth;
+    pipelineInfo.pRasterizationState = &blendRaster;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo,
+                                       nullptr, &meshBlendPipeline_));
+    pipelineInfo.pColorBlendState = &blend;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pRasterizationState = &raster;
+
     vkDestroyShaderModule(ctx_.device(), meshVert, nullptr);
     vkDestroyShaderModule(ctx_.device(), meshFrag, nullptr);
 
@@ -563,6 +591,10 @@ void Renderer3D::renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array,
     for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
         const SceneNode& node = scene.nodes[i];
         if (!node.alive || !node.mesh.valid()) continue;
+        // Blended surfaces (glass) don't block light in v1.
+        if (node.material.id < scene.materialAlphaModes.size() &&
+            scene.materialAlphaModes[node.material.id] == AlphaMode::Blend)
+            continue;
         ShadowPush push{};
         push.lightViewProj = lightViewProj;
         push.transformIndex = transformIndexOfNode[i];
@@ -600,9 +632,11 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         uint32_t transformIndex;
         uint32_t materialIndex;
         MeshHandle mesh;
+        float viewDepth; // blend sorting
     };
     std::vector<Mat4> transforms;
     std::vector<DrawItem> draws;
+    std::vector<DrawItem> blendDraws;
     std::vector<uint32_t> transformIndexOfNode(scene.nodes.size(), 0);
     transforms.reserve(scene.nodes.size());
     for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
@@ -618,8 +652,16 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         const float worldRadius =
             range.boundsRadius * std::max(scale.x, std::max(scale.y, scale.z));
         if (!frustum.visible(worldCenter, worldRadius)) continue;
-        draws.push_back({transformIndexOfNode[i], node.material.id, node.mesh});
+
+        const bool blends = node.material.id < scene.materialAlphaModes.size() &&
+                            scene.materialAlphaModes[node.material.id] == AlphaMode::Blend;
+        const float viewDepth = -(ubo.view * Vec4{worldCenter, 1.0f}).z;
+        (blends ? blendDraws : draws)
+            .push_back({transformIndexOfNode[i], node.material.id, node.mesh, viewDepth});
     }
+    // Transparent surfaces draw farthest-first over the opaque result.
+    std::sort(blendDraws.begin(), blendDraws.end(),
+              [](const DrawItem& a, const DrawItem& b) { return a.viewDepth > b.viewDepth; });
 
     // ---- lights + shadow assignment
     struct SpotShadowJob {
@@ -888,8 +930,7 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    if (!draws.empty()) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline_);
+    if (!draws.empty() || !blendDraws.empty()) {
         const VkDescriptorSet sets[] = {bindless_.set(), frameSets_[slot]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshLayout_, 0, 2, sets, 0,
                                 nullptr);
@@ -898,13 +939,24 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &zeroOffset);
         vkCmdBindIndexBuffer(cmd, scene.meshes->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
-        for (const DrawItem& draw : draws) {
-            const MeshPush push{draw.transformIndex, draw.materialIndex};
-            vkCmdPushConstants(cmd, meshLayout_,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               sizeof(push), &push);
-            const MeshRange& range = scene.meshes->range(draw.mesh);
-            vkCmdDrawIndexed(cmd, range.indexCount, 1, range.firstIndex, range.vertexOffset, 0);
+        auto recordDraws = [&](const std::vector<DrawItem>& items) {
+            for (const DrawItem& draw : items) {
+                const MeshPush push{draw.transformIndex, draw.materialIndex};
+                vkCmdPushConstants(cmd, meshLayout_,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                   sizeof(push), &push);
+                const MeshRange& range = scene.meshes->range(draw.mesh);
+                vkCmdDrawIndexed(cmd, range.indexCount, 1, range.firstIndex,
+                                 range.vertexOffset, 0);
+            }
+        };
+        if (!draws.empty()) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline_);
+            recordDraws(draws);
+        }
+        if (!blendDraws.empty()) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshBlendPipeline_);
+            recordDraws(blendDraws);
         }
     }
     vkCmdEndRendering(cmd);

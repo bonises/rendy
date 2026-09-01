@@ -75,6 +75,7 @@ private:
 
     VkPipelineLayout meshLayout_ = VK_NULL_HANDLE;
     VkPipeline meshPipeline_ = VK_NULL_HANDLE;
+    VkPipeline meshBlendPipeline_ = VK_NULL_HANDLE; ///< alpha blend, no depth write
     VkPipelineLayout tonemapLayout_ = VK_NULL_HANDLE;
     VkPipeline tonemapPipeline_ = VK_NULL_HANDLE;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;

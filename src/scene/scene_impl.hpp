@@ -49,6 +49,7 @@ struct SceneImpl {
     std::vector<Light> lights;          // authoring data; node holds transform
     std::vector<uint32_t> lightNodes;   // node index per light
     std::vector<GpuMaterial> materials; // uploaded per frame
+    std::vector<AlphaMode> materialAlphaModes; // parallel to materials
     Color ambient{0.03f, 0.03f, 0.04f, 1.0f};
 
     /// Recompute world matrices (parents are always created before children,

@@ -115,6 +115,9 @@ void main() {
     if (material.maps.x != 0u)
         baseColor *= texture(textures[nonuniformEXT(material.maps.x)], vUV);
 
+    // Alpha mask (params.w = cutoff, 0 = disabled).
+    if (material.params.w > 0.0 && baseColor.a < material.params.w) discard;
+
     float metallic = material.emissiveMetallic.w;
     float roughness = material.params.x;
     if (material.maps.y != 0u) {

@@ -8,6 +8,13 @@
 
 namespace rendy {
 
+/// How a material's alpha is interpreted (glTF semantics).
+enum class AlphaMode : uint8_t {
+    Opaque, ///< alpha ignored
+    Mask,   ///< discard below alphaCutoff (foliage, fences)
+    Blend,  ///< alpha blended, sorted back-to-front (glass, effects)
+};
+
 struct MaterialDesc {
     Color baseColor = colors::white; ///< multiplied with baseColorTexture
     float metallic = 0.0f;
@@ -15,6 +22,8 @@ struct MaterialDesc {
     Color emissive = colors::transparent;
     float normalScale = 1.0f;
     float occlusionStrength = 1.0f;
+    AlphaMode alphaMode = AlphaMode::Opaque;
+    float alphaCutoff = 0.5f; ///< Mask mode only
 
     TextureRef baseColorTexture{};         ///< sRGB
     TextureRef metallicRoughnessTexture{}; ///< linear; G=roughness, B=metallic

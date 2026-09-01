@@ -40,7 +40,8 @@ direction are relative to the light's node transform.
 ## MaterialDesc
 
 `{ baseColor, metallic (0), roughness (0.7), emissive, normalScale,
-occlusionStrength, baseColorTexture, metallicRoughnessTexture (G=roughness
+occlusionStrength, alphaMode (Opaque/Mask/Blend), alphaCutoff (0.5),
+baseColorTexture, metallicRoughnessTexture (G=roughness
 B=metallic, linear), normalTexture (linear), occlusionTexture (linear),
 emissiveTexture }`. Color factors are sRGB and multiply the textures.
 

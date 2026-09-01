@@ -52,6 +52,14 @@ int main() {
         spinners[i] = scene.addMesh(shapes[i].mesh, material, transform);
     }
 
+    // A glass dome over the middle shapes (AlphaMode::Blend).
+    auto glass = scene.createMaterial({.baseColor = Color::rgba(0x9AC8E840),
+                                       .metallic = 0.0f,
+                                       .roughness = 0.05f,
+                                       .alphaMode = AlphaMode::Blend});
+    scene.addMesh(primitives::sphere(2.2f, 48, 24), glass,
+                  Transform{.position = {0.0f, 0.9f, 0.0f}});
+
     // Sun + moving lights.
     auto sun = scene.addLight({.type = Light::Type::Directional,
                                .direction = {-0.4f, -1.0f, -0.3f},
