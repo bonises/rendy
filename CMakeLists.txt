@@ -42,6 +42,8 @@ add_library(rendy STATIC
   src/scene/scene.cpp
   src/scene/renderer3d.cpp
   src/scene/gltf.cpp
+  src/audio/mixer.cpp
+  src/audio/audio_impl.cpp
 )
 
 rendy_compile_shaders(rendy
@@ -74,7 +76,8 @@ target_link_libraries(rendy
     stb::stb
     freetype
     yogacore
-    fastgltf::fastgltf)
+    fastgltf::fastgltf
+    dr_libs::dr_libs)
 
 target_compile_features(rendy PUBLIC cxx_std_20)
 

@@ -5,6 +5,7 @@
 
 #include "app/app.hpp"
 #include "app/input.hpp"
+#include "audio/audio.hpp"
 #include "canvas/canvas.hpp"
 #include "core/color.hpp"
 #include "core/handle.hpp"
