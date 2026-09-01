@@ -8,4 +8,11 @@ function(rendy_example name)
 endfunction()
 
 rendy_example(01_hello)
+rendy_example(02_ui_gallery)
 rendy_example(03_text_editor_lite)
+
+# Runtime assets copied next to the binaries.
+add_custom_command(TARGET 02_ui_gallery POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${CMAKE_CURRENT_SOURCE_DIR}/02_ui_gallery/gallery.css
+          $<TARGET_FILE_DIR:02_ui_gallery>/gallery.css)

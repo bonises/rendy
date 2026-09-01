@@ -32,6 +32,11 @@ add_library(rendy STATIC
   src/canvas/canvas.cpp
   src/canvas/renderer2d.cpp
   src/text/glyph_cache.cpp
+  src/css/tokenizer.cpp
+  src/css/parser.cpp
+  src/css/cascade.cpp
+  src/ui/yoga_layout.cpp
+  src/ui/context.cpp
 )
 
 rendy_compile_shaders(rendy
@@ -57,7 +62,8 @@ target_link_libraries(rendy
     volk::volk
     GPUOpen::VulkanMemoryAllocator
     stb::stb
-    freetype)
+    freetype
+    yogacore)
 
 target_compile_features(rendy PUBLIC cxx_std_20)
 

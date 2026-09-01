@@ -31,6 +31,8 @@ float roundedBoxSDF(vec2 p, vec2 halfSize, vec4 radii) {
     // radii = (tl, tr, br, bl); pick by quadrant of p (origin at center).
     float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w)
                           : ((p.y < 0.0) ? radii.y : radii.z);
+    // CSS semantics: a radius never exceeds half the box (999px = pill).
+    r = min(r, min(halfSize.x, halfSize.y));
     vec2 q = abs(p) - halfSize + r;
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }

@@ -1,0 +1,122 @@
+/* rendy ui gallery — edit while the demo runs to see hot reload. */
+
+root {
+  flex-direction: row;
+  background-color: #11111b;
+  color: #cdd6f4;
+  font-size: 15px;
+}
+
+/* ---------------------------------------------------------------- sidebar */
+
+.sidebar {
+  width: 220px;
+  background-color: #181825;
+  padding: 16px 12px;
+  gap: 6px;
+}
+
+.sidebar .title {
+  font-size: 18px;
+  color: #f5e0dc;
+  margin-bottom: 12px;
+}
+
+.nav-item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: #a6adc8;
+}
+
+.nav-item:hover {
+  background-color: #313244;
+  color: #cdd6f4;
+}
+
+.nav-item.selected {
+  background-color: #45475a;
+  color: #f5e0dc;
+}
+
+/* ------------------------------------------------------------------ main */
+
+.main {
+  flex: 1;
+  padding: 20px;
+  gap: 16px;
+}
+
+.toolbar {
+  flex-direction: row;
+  gap: 8px;
+  align-items: center;
+}
+
+button {
+  padding: 8px 16px;
+  border-radius: 8px;
+  background-color: #45475a;
+  color: #cdd6f4;
+}
+
+button:hover { background-color: #585b70; }
+button:active { background-color: #6c7086; }
+
+button.primary { background-color: #89b4fa; color: #11111b; }
+button.primary:hover { background-color: #b4befe; }
+
+button:disabled { opacity: 0.4; }
+
+.counter {
+  margin-left: auto;
+  font-size: 14px;
+  color: #a6adc8;
+}
+
+/* -------------------------------------------------------------- the list */
+
+.card {
+  flex: 1;
+  background-color: #1e1e2e;
+  border-radius: 12px;
+  border: 1px #313244;
+  overflow: scroll;
+  padding: 8px;
+  gap: 4px;
+}
+
+.row {
+  flex-direction: row;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  gap: 12px;
+}
+
+.row:hover { background-color: #313244; }
+
+.row .index {
+  width: 40px;
+  color: #6c7086;
+  font-size: 13px;
+}
+
+.row .name { flex: 1; }
+
+.row .badge {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background-color: #a6e3a1;
+  color: #11111b;
+  font-size: 12px;
+}
+
+.row:first-child .badge { background-color: #f9e2af; }
+.row:last-child .badge { background-color: #f38ba8; }
+
+.statusbar {
+  flex-direction: row;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #6c7086;
+}

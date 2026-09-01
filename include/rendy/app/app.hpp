@@ -26,6 +26,9 @@ namespace rendy {
 namespace detail {
 struct AppImpl;
 }
+namespace ui {
+class Context;
+}
 
 struct AppConfig {
     std::string title = "rendy";
@@ -103,6 +106,7 @@ public:
     [[nodiscard]] float fps() const;
 
 private:
+    friend class ui::Context;
     explicit App(std::unique_ptr<detail::AppImpl> impl);
     std::unique_ptr<detail::AppImpl> impl_;
 };

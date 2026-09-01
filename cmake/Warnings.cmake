@@ -9,6 +9,9 @@ target_compile_options(rendy_warnings INTERFACE
   -Wextra
   -Wpedantic
   -Wshadow
+  # rendy's option structs are meant to be partially designated-initialized:
+  # App::create({.title = "x"}) — this -Wextra sub-warning fights the API.
+  -Wno-missing-field-initializers
 )
 
 if(RENDY_WERROR)
