@@ -75,6 +75,29 @@ TEST_CASE("descendant and child combinators", "[css][cascade]") {
     REQUIRE(resolve({&sheet}, rowDirect).opacity == Approx(0.6f));
 }
 
+TEST_CASE("mixed child/descendant combinators backtrack", "[css][cascade]") {
+    // .a > .b .c — the NEAREST .b ancestor has no .a parent, but a higher
+    // .b does; greedy matching would miss it.
+    auto sheet = sheetOf(".a > .b .c { opacity: 0.3; }");
+    std::vector<std::string> a{"a"};
+    std::vector<std::string> b{"b"};
+    std::vector<std::string> c{"c"};
+
+    MatchContext top{"div", "", &a, 0, nullptr};        // .a
+    MatchContext outerB{"div", "", &b, 0, &top};        // .b (child of .a) ✓
+    MatchContext plain{"div", "", nullptr, 0, &outerB}; // -
+    MatchContext innerB{"div", "", &b, 0, &plain};      // .b (parent NOT .a)
+    MatchContext target{"div", "", &c, 0, &innerB};     // .c
+
+    REQUIRE(resolve({&sheet}, target).opacity == Approx(0.3f));
+
+    // And still no match when no .b has an .a parent.
+    MatchContext topPlain{"div", "", nullptr, 0, nullptr};
+    MatchContext onlyB{"div", "", &b, 0, &topPlain};
+    MatchContext target2{"div", "", &c, 0, &onlyB};
+    REQUIRE(resolve({&sheet}, target2).opacity == Approx(1.0f));
+}
+
 TEST_CASE("pseudo-classes require the state bit", "[css][cascade]") {
     auto sheet = sheetOf("button:hover { opacity: 0.5; }");
     MatchContext plain{"button", "", nullptr, 0, nullptr};

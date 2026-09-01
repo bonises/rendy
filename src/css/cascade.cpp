@@ -22,39 +22,38 @@ bool matchesCompound(const SimpleSelector& selector, const MatchContext& element
     return true;
 }
 
+namespace {
+
+// Match compounds[0..index] where compounds[index] must be satisfied at
+// `candidate` or (for descendant combinators) some ancestor of it. Needs
+// backtracking: with mixed child/descendant combinators (".a > .b .c") the
+// nearest matching ancestor is not always the right one.
+bool matchAncestors(const ComplexSelector& selector, size_t index,
+                    const MatchContext* candidate) {
+    const SimpleSelector& compound = selector.compounds[index];
+    const Combinator combinator = selector.combinators[index]; // joins to index+1
+
+    for (const MatchContext* cursor = candidate; cursor != nullptr;
+         cursor = cursor->parent) {
+        if (matchesCompound(compound, *cursor)) {
+            if (index == 0) return true;
+            if (matchAncestors(selector, index - 1, cursor->parent)) return true;
+            // else: try a higher ancestor (descendant only, see below).
+        }
+        if (combinator == Combinator::Child) return false; // exactly one try
+    }
+    return false;
+}
+
+} // namespace
+
 bool matchesSelector(const ComplexSelector& selector, const MatchContext& element) {
     // Match right-to-left: rightmost compound against the element itself.
     const auto count = selector.compounds.size();
     if (count == 0) return false;
     if (!matchesCompound(selector.compounds[count - 1], element)) return false;
-
-    // Walk ancestors for the remaining compounds.
-    size_t index = count - 1;
-    const MatchContext* candidate = element.parent;
-    while (index > 0) {
-        const Combinator combinator = selector.combinators[index - 1];
-        const SimpleSelector& compound = selector.compounds[index - 1];
-        if (combinator == Combinator::Child) {
-            if (candidate == nullptr || !matchesCompound(compound, *candidate)) return false;
-            candidate = candidate->parent;
-            index--;
-        } else {
-            // Descendant: find any ancestor that matches.
-            bool found = false;
-            while (candidate != nullptr) {
-                if (matchesCompound(compound, *candidate)) {
-                    // Greedy is safe for our subset (no sibling backtracking).
-                    candidate = candidate->parent;
-                    found = true;
-                    break;
-                }
-                candidate = candidate->parent;
-            }
-            if (!found) return false;
-            index--;
-        }
-    }
-    return true;
+    if (count == 1) return true;
+    return matchAncestors(selector, count - 2, element.parent);
 }
 
 void applyDeclaration(const Declaration& d, ComputedStyle* s) {

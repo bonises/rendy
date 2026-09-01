@@ -156,6 +156,17 @@ struct ContextImpl {
                 setPseudo(focused, css::kPseudoFocus, true);
             }
         }
+        if (input.wheel().y != 0.0f && hit != nullptr) {
+            if (Node* scroller = scrollTarget(hit)) {
+                scroller->scrollOffset.y -= input.wheel().y * 48.0f;
+                const float maxScroll =
+                    std::max(0.0f, scroller->contentSize.y - scroller->rect.size.y);
+                scroller->scrollOffset.y = std::clamp(scroller->scrollOffset.y, 0.0f, maxScroll);
+                markDirty(); // rects move; recompute
+            }
+        }
+        // Click handlers go LAST: they may remove nodes, which would leave
+        // `hit` (and anything derived from it) dangling for later steps.
         if (input.mouseReleased(MouseButton::Left)) {
             setPseudo(pressed, css::kPseudoActive, false);
             if (pressed != nullptr && pressed == hit &&
@@ -169,15 +180,6 @@ struct ContextImpl {
                 }
             }
             pressed = nullptr;
-        }
-        if (input.wheel().y != 0.0f && hit != nullptr) {
-            if (Node* scroller = scrollTarget(hit)) {
-                scroller->scrollOffset.y -= input.wheel().y * 48.0f;
-                const float maxScroll =
-                    std::max(0.0f, scroller->contentSize.y - scroller->rect.size.y);
-                scroller->scrollOffset.y = std::clamp(scroller->scrollOffset.y, 0.0f, maxScroll);
-                markDirty(); // rects move; recompute
-            }
         }
     }
 
