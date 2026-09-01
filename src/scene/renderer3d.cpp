@@ -27,15 +27,20 @@ struct FrameUbo {
     Vec4 pointShadowParams;
 };
 
+constexpr uint32_t kNoJoints = 0xFFFFFFFFu;
+
 struct MeshPush {
     uint32_t transformIndex;
     uint32_t materialIndex;
+    uint32_t jointBase; // kNoJoints = unskinned
+    uint32_t pad;
 };
 
 struct ShadowPush {
     Mat4 lightViewProj;
     uint32_t transformIndex;
-    uint32_t pad[3];
+    uint32_t jointBase;
+    uint32_t pad[2];
 };
 
 constexpr float kPointShadowNear = 0.05f;
@@ -85,8 +90,8 @@ struct FrustumPlanes {
 Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
                        VkFormat swapchainFormat)
     : ctx_(ctx), bindless_(bindless) {
-    // Set 1: UBO + transforms + materials + lights + 3 shadow map arrays.
-    VkDescriptorSetLayoutBinding bindings[7]{};
+    // Set 1: UBO + transforms/materials/lights/joints + 3 shadow map arrays.
+    VkDescriptorSetLayoutBinding bindings[8]{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     for (uint32_t i = 1; i < 4; ++i)
@@ -95,16 +100,18 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     for (uint32_t i = 4; i < 7; ++i)
         bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                        VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[7] = {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 7;
+    layoutInfo.bindingCount = 8;
     layoutInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &frameSetLayout_));
 
     VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, gpu::kFramesInFlight},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * gpu::kFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * gpu::kFramesInFlight},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * gpu::kFramesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
@@ -267,6 +274,8 @@ Renderer3D::~Renderer3D() {
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     for (auto& buffer : lightBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
+    for (auto& buffer : jointBuffers_)
+        if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     vkDestroySampler(ctx_.device(), resolveSampler_, nullptr);
     vkDestroyPipeline(ctx_.device(), meshBlendPipeline_, nullptr);
     vkDestroyPipeline(ctx_.device(), meshPipeline_, nullptr);
@@ -300,12 +309,14 @@ void Renderer3D::createPipelines() {
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
         {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
         {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
+        {4, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(Vertex, joints)},
+        {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights)},
     };
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInput.vertexBindingDescriptionCount = 1;
     vertexInput.pVertexBindingDescriptions = &binding;
-    vertexInput.vertexAttributeDescriptionCount = 4;
+    vertexInput.vertexAttributeDescriptionCount = 6;
     vertexInput.pVertexAttributeDescriptions = attributes;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -443,12 +454,14 @@ void Renderer3D::createPipelines() {
     shadowStage.module = shadowVert;
     shadowStage.pName = "main";
 
+    const VkVertexInputAttributeDescription shadowAttributes[] = {
+        attributes[0], attributes[4], attributes[5]}; // position + skinning
     VkPipelineVertexInputStateCreateInfo shadowInput{};
     shadowInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     shadowInput.vertexBindingDescriptionCount = 1;
     shadowInput.pVertexBindingDescriptions = &binding;
-    shadowInput.vertexAttributeDescriptionCount = 1; // position only
-    shadowInput.pVertexAttributeDescriptions = attributes;
+    shadowInput.vertexAttributeDescriptionCount = 3;
+    shadowInput.pVertexAttributeDescriptions = shadowAttributes;
 
     VkPipelineRasterizationStateCreateInfo shadowRaster = raster;
     shadowRaster.cullMode = VK_CULL_MODE_NONE; // no peter-panning surprises
@@ -567,11 +580,12 @@ void Renderer3D::ensureCapacity(MappedBuffer& buffer, size_t bytes, uint32_t slo
 }
 
 void Renderer3D::updateDescriptors(uint32_t slot) {
-    VkDescriptorBufferInfo bufferInfos[4] = {
+    VkDescriptorBufferInfo bufferInfos[5] = {
         {uboBuffers_[slot].buffer, 0, sizeof(FrameUbo)},
         {transformBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
         {materialBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
         {lightBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
+        {jointBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
     };
     VkDescriptorImageInfo imageInfos[3] = {
         {shadowSampler_, cascadeShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
@@ -579,22 +593,22 @@ void Renderer3D::updateDescriptors(uint32_t slot) {
         {pointShadowSampler_, pointShadows_.sampleView,
          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
     };
-    VkWriteDescriptorSet writes[7]{};
-    for (uint32_t i = 0; i < 7; ++i) {
+    VkWriteDescriptorSet writes[8]{};
+    for (uint32_t i = 0; i < 8; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = frameSets_[slot];
         writes[i].dstBinding = i;
         writes[i].descriptorCount = 1;
-        if (i < 4) {
+        if (i < 4 || i == 7) {
             writes[i].descriptorType =
                 i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[i].pBufferInfo = &bufferInfos[i];
+            writes[i].pBufferInfo = &bufferInfos[i == 7 ? 4 : i];
         } else {
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[i].pImageInfo = &imageInfos[i - 4];
         }
     }
-    vkUpdateDescriptorSets(ctx_.device(), 7, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 8, writes, 0, nullptr);
     descriptorsDirty_[slot] = false;
 }
 
@@ -626,6 +640,7 @@ void Renderer3D::renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array,
         ShadowPush push{};
         push.lightViewProj = lightViewProj;
         push.transformIndex = group.baseTransform;
+        push.jointBase = group.jointBase;
         vkCmdPushConstants(cmd, meshLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(push), &push);
@@ -663,6 +678,7 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
         MeshHandle mesh;
         float viewDepth;     // blend sorting
         uint32_t instances;  // opaque groups
+        uint32_t jointBase = kNoJoints;
     };
     std::vector<Mat4> transforms;
     std::vector<DrawItem> blendDraws;
@@ -671,12 +687,49 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     // visible set (mesh+material-keyed); blended nodes draw individually.
     std::map<uint32_t, std::vector<Mat4>> shadowGroupBuild;
     std::map<std::pair<uint32_t, uint32_t>, std::vector<Mat4>> opaqueGroups;
+    std::vector<DrawItem> skinnedDraws;
+    std::vector<ShadowGroup> skinnedShadowDraws;
+    std::vector<Mat4> jointMatrices;
+    std::map<int32_t, uint32_t> jointBaseOfSkin; // built once per skin per frame
+    auto jointBaseFor = [&](int32_t skinIndex) -> uint32_t {
+        if (auto it = jointBaseOfSkin.find(skinIndex); it != jointBaseOfSkin.end())
+            return it->second;
+        const Skin& skin = scene.skins[static_cast<size_t>(skinIndex)];
+        const auto base = static_cast<uint32_t>(jointMatrices.size());
+        for (size_t j = 0; j < skin.jointNodes.size(); ++j) {
+            const uint32_t jointNode = skin.jointNodes[j];
+            const Mat4 world =
+                jointNode < scene.nodes.size() ? scene.nodes[jointNode].world : Mat4{1.0f};
+            jointMatrices.push_back(world * skin.inverseBind[j]);
+        }
+        jointBaseOfSkin.emplace(skinIndex, base);
+        return base;
+    };
+
     for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
         const SceneNode& node = scene.nodes[i];
         if (!node.alive || !node.mesh.valid()) continue;
 
         const bool blends = node.material.id < scene.materialAlphaModes.size() &&
                             scene.materialAlphaModes[node.material.id] == AlphaMode::Blend;
+
+        if (node.skinIndex >= 0 &&
+            static_cast<size_t>(node.skinIndex) < scene.skins.size()) {
+            // Skinned: joints define the pose, no instancing, no frustum
+            // culling (animated bounds move away from the bind pose).
+            const uint32_t jointBase = jointBaseFor(node.skinIndex);
+            DrawItem item{0, node.material.id, node.mesh, 0.0f, 1, jointBase};
+            if (blends) {
+                const Vec3 worldCenter = Vec3(node.world[3]);
+                item.viewDepth = -(ubo.view * Vec4{worldCenter, 1.0f}).z;
+                blendDraws.push_back(item);
+            } else {
+                skinnedDraws.push_back(item);
+                skinnedShadowDraws.push_back({0, 1, node.mesh, jointBase});
+            }
+            continue;
+        }
+
         if (!blends) shadowGroupBuild[node.mesh.id].push_back(node.world);
 
         const MeshRange& range = scene.meshes->range(node.mesh);
@@ -703,6 +756,8 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
                                 static_cast<uint32_t>(matrices.size()), MeshHandle{meshId}});
         transforms.insert(transforms.end(), matrices.begin(), matrices.end());
     }
+    shadowGroups.insert(shadowGroups.end(), skinnedShadowDraws.begin(),
+                        skinnedShadowDraws.end());
     std::vector<DrawItem> draws;
     draws.reserve(opaqueGroups.size());
     for (auto& [key, matrices] : opaqueGroups) {
@@ -866,6 +921,11 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     if (!gpuLights.empty())
         std::memcpy(lightBuffers_[slot].mapped, gpuLights.data(),
                     gpuLights.size() * sizeof(GpuLight));
+    ensureCapacity(jointBuffers_[slot],
+                   std::max<size_t>(jointMatrices.size(), 1) * sizeof(Mat4), slot, frames);
+    if (!jointMatrices.empty())
+        std::memcpy(jointBuffers_[slot].mapped, jointMatrices.data(),
+                    jointMatrices.size() * sizeof(Mat4));
     if (descriptorsDirty_[slot]) updateDescriptors(slot);
 
     // ---- shadow passes
@@ -981,7 +1041,7 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    if (!draws.empty() || !blendDraws.empty()) {
+    if (!draws.empty() || !skinnedDraws.empty() || !blendDraws.empty()) {
         const VkDescriptorSet sets[] = {bindless_.set(), frameSets_[slot]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshLayout_, 0, 2, sets, 0,
                                 nullptr);
@@ -992,7 +1052,8 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
 
         auto recordDraws = [&](const std::vector<DrawItem>& items) {
             for (const DrawItem& draw : items) {
-                const MeshPush push{draw.transformIndex, draw.materialIndex};
+                const MeshPush push{draw.transformIndex, draw.materialIndex, draw.jointBase,
+                                    0};
                 vkCmdPushConstants(cmd, meshLayout_,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                    sizeof(push), &push);
@@ -1001,9 +1062,10 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
                                  range.vertexOffset, 0);
             }
         };
-        if (!draws.empty()) {
+        if (!draws.empty() || !skinnedDraws.empty()) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline_);
             recordDraws(draws);
+            recordDraws(skinnedDraws);
         }
         if (!blendDraws.empty()) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshBlendPipeline_);

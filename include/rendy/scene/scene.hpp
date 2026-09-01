@@ -14,6 +14,8 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace rendy {
 
@@ -82,7 +84,34 @@ public:
     void setAmbient(Color color);
 
     /// Loads a .gltf/.glb file as a child hierarchy. Returns the root node.
+    /// Imports meshes, PBR materials, textures, skins and animations.
     Result<NodeId> loadGltf(const std::string& path);
+
+    // ---- animation -------------------------------------------------------
+
+    struct AnimationHandle {
+        uint32_t index = UINT32_MAX;
+        [[nodiscard]] bool valid() const { return index != UINT32_MAX; }
+    };
+
+    /// Names of all animations loaded so far (glTF clips), in load order.
+    [[nodiscard]] std::vector<std::string> animationNames() const;
+    [[nodiscard]] AnimationHandle findAnimation(std::string_view name) const;
+
+    void playAnimation(AnimationHandle animation, bool loop = true, float speed = 1.0f);
+    /// Convenience: play by clip name (no-op with a warning if missing).
+    void playAnimation(std::string_view name, bool loop = true, float speed = 1.0f);
+    void stopAnimation(AnimationHandle animation);
+    void stopAllAnimations();
+    [[nodiscard]] bool animationPlaying(AnimationHandle animation) const;
+
+    /// Advance playing clips and write the sampled values into node
+    /// transforms. Call once per frame before drawing.
+    void updateAnimations(float dt);
+
+    /// Rough bounding-sphere radius of a subtree (bind pose) — handy for
+    /// framing a camera around a freshly loaded model.
+    [[nodiscard]] float approximateRadius(NodeId root);
 
 private:
     friend struct detail::SceneImpl;

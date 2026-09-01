@@ -7,10 +7,13 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec4 inTangent; // xyz tangent, w handedness
 layout(location = 3) in vec2 inUV;
+layout(location = 4) in uvec4 inJoints;
+layout(location = 5) in vec4 inWeights;
 
 layout(push_constant) uniform PC {
     uint transformIndex;
     uint materialIndex;
+    uint jointBase; // NO_JOINTS = unskinned
 } pc;
 
 layout(location = 0) out vec3 vWorldPos;
@@ -19,8 +22,8 @@ layout(location = 2) out vec4 vTangent;
 layout(location = 3) out vec2 vUV;
 
 void main() {
-    // Instanced draws pass a base index; instance i uses the next slot.
-    const mat4 model = transforms[pc.transformIndex + gl_InstanceIndex];
+    const mat4 model = rendyModelMatrix(pc.transformIndex, pc.jointBase, inJoints, inWeights,
+                                        gl_InstanceIndex);
     const vec4 worldPos = model * vec4(inPosition, 1.0);
     vWorldPos = worldPos.xyz;
 

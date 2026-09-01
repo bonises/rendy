@@ -7,13 +7,17 @@
 #include "scene_common.glsl"
 
 layout(location = 0) in vec3 inPosition;
+layout(location = 4) in uvec4 inJoints;
+layout(location = 5) in vec4 inWeights;
 
 layout(push_constant) uniform PC {
     mat4 lightViewProj;
     uint transformIndex;
+    uint jointBase;
 } pc;
 
 void main() {
-    gl_Position = pc.lightViewProj * transforms[pc.transformIndex + gl_InstanceIndex] *
-                  vec4(inPosition, 1.0);
+    const mat4 model = rendyModelMatrix(pc.transformIndex, pc.jointBase, inJoints, inWeights,
+                                        gl_InstanceIndex);
+    gl_Position = pc.lightViewProj * model * vec4(inPosition, 1.0);
 }

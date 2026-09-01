@@ -38,3 +38,17 @@ layout(set = 1, binding = 0) uniform FrameData {
 layout(std430, set = 1, binding = 1) readonly buffer Transforms { mat4 transforms[]; };
 layout(std430, set = 1, binding = 2) readonly buffer Materials { Material materials[]; };
 layout(std430, set = 1, binding = 3) readonly buffer Lights { LightData lights[]; };
+layout(std430, set = 1, binding = 7) readonly buffer Joints { mat4 jointMatrices[]; };
+
+const uint NO_JOINTS = 0xFFFFFFFFu;
+
+// Model matrix for a (possibly skinned) vertex. Skinned meshes follow their
+// skeleton and ignore the node transform, per the glTF spec.
+mat4 rendyModelMatrix(uint transformIndex, uint jointBase, uvec4 joints, vec4 weights,
+                      uint instanceIndex) {
+    if (jointBase == NO_JOINTS) return transforms[transformIndex + instanceIndex];
+    return weights.x * jointMatrices[jointBase + joints.x] +
+           weights.y * jointMatrices[jointBase + joints.y] +
+           weights.z * jointMatrices[jointBase + joints.z] +
+           weights.w * jointMatrices[jointBase + joints.w];
+}

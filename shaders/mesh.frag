@@ -13,6 +13,7 @@ layout(set = 1, binding = 6) uniform samplerCubeArray pointShadowMaps;
 layout(push_constant) uniform PC {
     uint transformIndex;
     uint materialIndex;
+    uint jointBase;
 } pc;
 
 layout(location = 0) in vec3 vWorldPos;

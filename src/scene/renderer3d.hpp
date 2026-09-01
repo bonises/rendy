@@ -107,6 +107,7 @@ private:
         uint32_t baseTransform;
         uint32_t instances;
         MeshHandle mesh;
+        uint32_t jointBase = 0xFFFFFFFFu; // kNoJoints
     };
     void renderShadowPass(VkCommandBuffer cmd, const ShadowArray& array, uint32_t layer,
                           const Mat4& lightViewProj, SceneImpl& scene,
@@ -123,6 +124,7 @@ private:
     MappedBuffer transformBuffers_[gpu::kFramesInFlight];
     MappedBuffer materialBuffers_[gpu::kFramesInFlight];
     MappedBuffer lightBuffers_[gpu::kFramesInFlight];
+    MappedBuffer jointBuffers_[gpu::kFramesInFlight];
 };
 
 } // namespace rendy::detail

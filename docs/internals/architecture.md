@@ -97,6 +97,15 @@ mtime change (debug builds).
   individually, sorted back-to-front, on a no-depth-write blend pipeline
   after the opaque pass; alpha-mask materials discard in the fragment
   shader. 20k instanced cubes render at ~270 fps with full shadows.
+- **Skinning/animation**: glTF clips import as `SceneAnimation` channel
+  lists sampled on the CPU (`Scene::updateAnimations`) into node transforms;
+  skins store joint node indices + inverse binds, and per frame each used
+  skin's joint matrices (`world * inverseBind`) upload to the joints SSBO
+  (set 1 binding 7). Skinned vertices carry JOINTS_0/WEIGHTS_0
+  (`Vertex::joints/weights`); `rendyModelMatrix` in `scene_common.glsl`
+  blends joint matrices when `jointBase != NO_JOINTS` — the same path serves
+  the camera pass and the shadow passes, so shadows are skinned too.
+  Skinned draws skip instancing and frustum culling (animated bounds).
 - **Shadows**: fixed arrays created up front — CSM 2048²×4, spots 1024²×8,
   point cubes 512²×24 — rendered by one depth-only vertex-shader pipeline
   (light matrix in push constants), sampled via compare samplers (PCF 3×3)

@@ -15,6 +15,8 @@ struct Vertex {
     Vec3 normal{0.0f, 1.0f, 0.0f};
     Vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f}; ///< xyz tangent, w handedness
     Vec2 uv{0.0f};
+    glm::u16vec4 joints{0};   ///< skinning: joint indices into the skin
+    Vec4 weights{0.0f};       ///< skinning: joint weights (sum ~1)
 };
 
 struct MeshData {

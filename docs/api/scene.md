@@ -20,7 +20,13 @@ see the [3D guide](../guides/3d.md) for concepts.
 | `light` | `Light& light(NodeId)` | for addLight nodes |
 | `setMaterial` | `void setMaterial(NodeId, MaterialHandle)` | |
 | `setAmbient` | `void setAmbient(Color)` | flat ambient |
-| `loadGltf` | `Result<NodeId> loadGltf(path)` | .gltf/.glb → root node |
+| `loadGltf` | `Result<NodeId> loadGltf(path)` | .gltf/.glb → root node (incl. skins + animations) |
+| `animationNames` | `std::vector<std::string> animationNames() const` | loaded clips |
+| `findAnimation` | `AnimationHandle findAnimation(std::string_view) const` | |
+| `playAnimation` | `void playAnimation(handle\|name, bool loop = true, float speed = 1)` | |
+| `stopAnimation` / `stopAllAnimations` / `animationPlaying` | | |
+| `updateAnimations` | `void updateAnimations(float dt)` | once per frame |
+| `approximateRadius` | `float approximateRadius(NodeId)` | subtree bounding radius |
 
 `NodeRef`: `setPosition setRotation setScale rotateY rotate(angle, axis)
 transform()` — all chainable.

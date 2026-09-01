@@ -1,5 +1,5 @@
 // glTF 2.0 import via fastgltf: meshes, PBR materials, textures (with the
-// spec's sRGB/linear split), and the node hierarchy. Skinning/animation: v2.
+// spec's sRGB/linear split), the node hierarchy, skins and animations.
 
 #include "app/app_impl.hpp"
 #include "rendy/scene/scene.hpp"
@@ -10,6 +10,8 @@
 #include <fastgltf/tools.hpp>
 
 #include <stb_image.h>
+
+#include <fmt/core.h>
 
 #include <cstring>
 #include <filesystem>
@@ -30,6 +32,10 @@ struct GltfLoader {
     std::vector<uint32_t> materialIds;
     // glTF mesh index → list of (mesh handle, material id) per primitive.
     std::vector<std::vector<std::pair<MeshHandle, uint32_t>>> meshPrimitives;
+    // glTF node index → scene node index (filled during instantiate).
+    std::vector<uint32_t> nodeMap;
+    // Primitive scene nodes awaiting a skin (sceneNodeIndex, gltfSkinIndex).
+    std::vector<std::pair<uint32_t, size_t>> pendingSkins;
 
     TextureRef loadImage(size_t imageIndex, bool srgb) {
         auto& cache = srgb ? srgbImages : linearImages;
@@ -196,6 +202,21 @@ struct GltfLoader {
                         asset, asset.accessors[attr->accessorIndex],
                         [&](Vec2 value, size_t i) { mesh.vertices[i].uv = value; });
                 }
+                if (const auto* attr = primitive.findAttribute("JOINTS_0");
+                    attr != primitive.attributes.end()) {
+                    fastgltf::iterateAccessorWithIndex<glm::u16vec4>(
+                        asset, asset.accessors[attr->accessorIndex],
+                        [&](glm::u16vec4 value, size_t i) { mesh.vertices[i].joints = value; });
+                }
+                if (const auto* attr = primitive.findAttribute("WEIGHTS_0");
+                    attr != primitive.attributes.end()) {
+                    fastgltf::iterateAccessorWithIndex<Vec4>(
+                        asset, asset.accessors[attr->accessorIndex], [&](Vec4 value, size_t i) {
+                            const float sum = value.x + value.y + value.z + value.w;
+                            mesh.vertices[i].weights = sum > 0.0f ? value / sum : value;
+                        });
+                }
+
                 bool hasTangents = false;
                 if (const auto* attr = primitive.findAttribute("TANGENT");
                     attr != primitive.attributes.end()) {
@@ -264,11 +285,14 @@ struct GltfLoader {
                    node.transform);
 
         const NodeId id = publicScene.addNode(transform, parent);
+        if (nodeIndex < nodeMap.size()) nodeMap[nodeIndex] = id.index;
         if (node.meshIndex.has_value()) {
             for (const auto& [meshHandle, materialId] : meshPrimitives[*node.meshIndex]) {
                 const NodeId primitiveNode =
                     publicScene.addMesh(meshHandle, MaterialHandle{materialId});
                 publicScene.setParent(primitiveNode, id);
+                if (node.skinIndex.has_value())
+                    pendingSkins.emplace_back(primitiveNode.index, *node.skinIndex);
             }
         }
         for (size_t child : node.children) instantiate(publicScene, child, id);
@@ -293,7 +317,8 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
         return err("gltf: failed to parse '{}': {}", path,
                    fastgltf::getErrorMessage(asset.error()));
 
-    GltfLoader loader{*impl_, asset.get(), directory, {}, {}, {}, {}};
+    GltfLoader loader{*impl_, asset.get(), directory, {}, {}, {}, {}, {}, {}};
+    loader.nodeMap.assign(asset->nodes.size(), UINT32_MAX);
     loader.loadMaterials();
     loader.loadMeshes();
 
@@ -303,8 +328,86 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
         for (size_t nodeIndex : asset->scenes[sceneIndex].nodeIndices)
             loader.instantiate(*this, nodeIndex, root);
 
-    log::info("gltf: loaded '{}' ({} meshes, {} materials, {} images)", path,
-              asset->meshes.size(), asset->materials.size(), asset->images.size());
+    // ---- skins (joints reference glTF nodes → resolve via nodeMap)
+    const size_t skinBase = impl_->skins.size();
+    for (const fastgltf::Skin& skin : asset->skins) {
+        detail::Skin sceneSkin;
+        sceneSkin.jointNodes.reserve(skin.joints.size());
+        for (size_t joint : skin.joints)
+            sceneSkin.jointNodes.push_back(joint < loader.nodeMap.size()
+                                               ? loader.nodeMap[joint]
+                                               : UINT32_MAX);
+        sceneSkin.inverseBind.assign(skin.joints.size(), Mat4{1.0f});
+        if (skin.inverseBindMatrices.has_value()) {
+            fastgltf::iterateAccessorWithIndex<Mat4>(
+                asset.get(), asset->accessors[*skin.inverseBindMatrices],
+                [&](const Mat4& matrix, size_t i) { sceneSkin.inverseBind[i] = matrix; });
+        }
+        impl_->skins.push_back(std::move(sceneSkin));
+    }
+    for (const auto& [sceneNode, gltfSkin] : loader.pendingSkins)
+        impl_->nodes[sceneNode].skinIndex = static_cast<int32_t>(skinBase + gltfSkin);
+
+    // ---- animations
+    for (const fastgltf::Animation& animation : asset->animations) {
+        detail::SceneAnimation clip;
+        clip.name = animation.name.empty()
+                        ? fmt::format("animation_{}", impl_->animations.size())
+                        : std::string(animation.name);
+        for (const fastgltf::AnimationChannel& channel : animation.channels) {
+            if (!channel.nodeIndex.has_value()) continue;
+            if (channel.path != fastgltf::AnimationPath::Translation &&
+                channel.path != fastgltf::AnimationPath::Rotation &&
+                channel.path != fastgltf::AnimationPath::Scale)
+                continue; // morph weights: not in v1
+            const uint32_t sceneNode = *channel.nodeIndex < loader.nodeMap.size()
+                                           ? loader.nodeMap[*channel.nodeIndex]
+                                           : UINT32_MAX;
+            if (sceneNode == UINT32_MAX) continue;
+
+            const fastgltf::AnimationSampler& sampler = animation.samplers[channel.samplerIndex];
+            detail::AnimationChannel sceneChannel;
+            sceneChannel.node = sceneNode;
+            sceneChannel.path =
+                channel.path == fastgltf::AnimationPath::Translation
+                    ? detail::AnimationChannel::Path::Translation
+                    : channel.path == fastgltf::AnimationPath::Rotation
+                          ? detail::AnimationChannel::Path::Rotation
+                          : detail::AnimationChannel::Path::Scale;
+            sceneChannel.interpolation =
+                sampler.interpolation == fastgltf::AnimationInterpolation::Step
+                    ? detail::AnimationChannel::Interpolation::Step
+                    : sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline
+                          ? detail::AnimationChannel::Interpolation::CubicSpline
+                          : detail::AnimationChannel::Interpolation::Linear;
+
+            const auto& input = asset->accessors[sampler.inputAccessor];
+            sceneChannel.times.resize(input.count);
+            fastgltf::iterateAccessorWithIndex<float>(
+                asset.get(), input, [&](float t, size_t i) { sceneChannel.times[i] = t; });
+            if (!sceneChannel.times.empty())
+                clip.duration = std::max(clip.duration, sceneChannel.times.back());
+
+            const auto& output = asset->accessors[sampler.outputAccessor];
+            sceneChannel.values.resize(output.count, Vec4{0.0f});
+            if (sceneChannel.path == detail::AnimationChannel::Path::Rotation) {
+                fastgltf::iterateAccessorWithIndex<Vec4>(
+                    asset.get(), output,
+                    [&](Vec4 value, size_t i) { sceneChannel.values[i] = value; });
+            } else {
+                fastgltf::iterateAccessorWithIndex<Vec3>(
+                    asset.get(), output, [&](Vec3 value, size_t i) {
+                        sceneChannel.values[i] = Vec4{value, 0.0f};
+                    });
+            }
+            clip.channels.push_back(std::move(sceneChannel));
+        }
+        impl_->animations.push_back(std::move(clip));
+    }
+
+    log::info("gltf: loaded '{}' ({} meshes, {} materials, {} images, {} skins, {} animations)",
+              path, asset->meshes.size(), asset->materials.size(), asset->images.size(),
+              asset->skins.size(), asset->animations.size());
     return root;
 }
 

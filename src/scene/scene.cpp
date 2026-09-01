@@ -122,6 +122,171 @@ void Scene::setAmbient(Color color) { impl_->ambient = color; }
 
 // Scene::loadGltf lives in gltf.cpp.
 
+// --------------------------------------------------------------- animation
+
+namespace {
+
+// Sample one channel at time t (t already wrapped/clamped by the caller).
+Vec4 sampleChannel(const detail::AnimationChannel& channel, float t) {
+    using Interp = detail::AnimationChannel::Interpolation;
+    const auto& times = channel.times;
+    const bool cubic = channel.interpolation == Interp::CubicSpline;
+    const size_t stride = cubic ? 3 : 1; // inTangent, value, outTangent
+    auto valueAt = [&](size_t key) { return channel.values[key * stride + (cubic ? 1 : 0)]; };
+
+    if (times.empty()) return Vec4{0.0f};
+    if (t <= times.front()) return valueAt(0);
+    if (t >= times.back()) return valueAt(times.size() - 1);
+
+    const auto it = std::upper_bound(times.begin(), times.end(), t);
+    const size_t next = static_cast<size_t>(it - times.begin());
+    const size_t prev = next - 1;
+    const float span = times[next] - times[prev];
+    const float u = span > 0.0f ? (t - times[prev]) / span : 0.0f;
+
+    switch (channel.interpolation) {
+    case Interp::Step:
+        return valueAt(prev);
+    case Interp::Linear:
+        if (channel.path == detail::AnimationChannel::Path::Rotation) {
+            const Vec4 a = valueAt(prev);
+            const Vec4 b = valueAt(next);
+            const Quat qa{a.w, a.x, a.y, a.z};
+            const Quat qb{b.w, b.x, b.y, b.z};
+            const Quat q = glm::slerp(qa, qb, u);
+            return {q.x, q.y, q.z, q.w};
+        }
+        return glm::mix(valueAt(prev), valueAt(next), u);
+    case Interp::CubicSpline: {
+        // glTF Hermite: p(u) = h00 v0 + h10 d b0 + h01 v1 + h11 d a1
+        const Vec4 v0 = channel.values[prev * 3 + 1];
+        const Vec4 b0 = channel.values[prev * 3 + 2]; // out-tangent of prev
+        const Vec4 a1 = channel.values[next * 3 + 0]; // in-tangent of next
+        const Vec4 v1 = channel.values[next * 3 + 1];
+        const float u2 = u * u;
+        const float u3 = u2 * u;
+        Vec4 result = (2.0f * u3 - 3.0f * u2 + 1.0f) * v0 +
+                      (u3 - 2.0f * u2 + u) * span * b0 +
+                      (-2.0f * u3 + 3.0f * u2) * v1 + (u3 - u2) * span * a1;
+        if (channel.path == detail::AnimationChannel::Path::Rotation) {
+            const Quat q = glm::normalize(Quat{result.w, result.x, result.y, result.z});
+            result = {q.x, q.y, q.z, q.w};
+        }
+        return result;
+    }
+    }
+    return valueAt(prev);
+}
+
+} // namespace
+
+std::vector<std::string> Scene::animationNames() const {
+    std::vector<std::string> names;
+    names.reserve(impl_->animations.size());
+    for (const auto& animation : impl_->animations) names.push_back(animation.name);
+    return names;
+}
+
+Scene::AnimationHandle Scene::findAnimation(std::string_view name) const {
+    for (uint32_t i = 0; i < impl_->animations.size(); ++i)
+        if (impl_->animations[i].name == name) return {i};
+    return {};
+}
+
+void Scene::playAnimation(AnimationHandle handle, bool loop, float speed) {
+    if (!handle.valid() || handle.index >= impl_->animations.size()) return;
+    auto& animation = impl_->animations[handle.index];
+    animation.playing = true;
+    animation.loop = loop;
+    animation.speed = speed;
+    animation.time = 0.0;
+}
+
+void Scene::playAnimation(std::string_view name, bool loop, float speed) {
+    const AnimationHandle handle = findAnimation(name);
+    if (!handle.valid()) {
+        log::warn("animation '{}' not found", name);
+        return;
+    }
+    playAnimation(handle, loop, speed);
+}
+
+void Scene::stopAnimation(AnimationHandle handle) {
+    if (handle.valid() && handle.index < impl_->animations.size())
+        impl_->animations[handle.index].playing = false;
+}
+
+void Scene::stopAllAnimations() {
+    for (auto& animation : impl_->animations) animation.playing = false;
+}
+
+bool Scene::animationPlaying(AnimationHandle handle) const {
+    return handle.valid() && handle.index < impl_->animations.size() &&
+           impl_->animations[handle.index].playing;
+}
+
+void Scene::updateAnimations(float dt) {
+    for (auto& animation : impl_->animations) {
+        if (!animation.playing) continue;
+        animation.time += static_cast<double>(dt * animation.speed);
+        float t = static_cast<float>(animation.time);
+        if (animation.duration > 0.0f) {
+            if (animation.loop) {
+                t = std::fmod(t, animation.duration);
+                if (t < 0.0f) t += animation.duration;
+            } else if (t >= animation.duration) {
+                t = animation.duration;
+                animation.playing = false;
+            }
+        }
+
+        for (const auto& channel : animation.channels) {
+            if (channel.node >= impl_->nodes.size()) continue;
+            Transform& transform = impl_->nodes[channel.node].local;
+            const Vec4 value = sampleChannel(channel, t);
+            switch (channel.path) {
+            case detail::AnimationChannel::Path::Translation:
+                transform.position = Vec3(value);
+                break;
+            case detail::AnimationChannel::Path::Rotation:
+                transform.rotation = Quat{value.w, value.x, value.y, value.z};
+                break;
+            case detail::AnimationChannel::Path::Scale:
+                transform.scale = Vec3(value);
+                break;
+            }
+        }
+    }
+}
+
+float Scene::approximateRadius(NodeId root) {
+    if (!root.valid() || root.index >= impl_->nodes.size()) return 1.0f;
+    impl_->updateWorldTransforms();
+    const Vec3 origin = Vec3(impl_->nodes[root.index].world[3]);
+
+    // Is `node` inside the subtree under root?
+    auto inSubtree = [&](uint32_t index) {
+        for (uint32_t cursor = index; cursor != UINT32_MAX;
+             cursor = impl_->nodes[cursor].parent)
+            if (cursor == root.index) return true;
+        return false;
+    };
+
+    float radius = 0.0f;
+    for (uint32_t i = 0; i < impl_->nodes.size(); ++i) {
+        const detail::SceneNode& node = impl_->nodes[i];
+        if (!node.alive || !node.mesh.valid() || !inSubtree(i)) continue;
+        const detail::MeshRange& range = impl_->meshes->range(node.mesh);
+        const Vec3 center = Vec3(node.world * Vec4{range.boundsCenter, 1.0f});
+        const Vec3 scale{glm::length(Vec3(node.world[0])), glm::length(Vec3(node.world[1])),
+                         glm::length(Vec3(node.world[2]))};
+        const float worldRadius =
+            range.boundsRadius * std::max(scale.x, std::max(scale.y, scale.z));
+        radius = std::max(radius, glm::length(center - origin) + worldRadius);
+    }
+    return std::max(radius, 0.01f);
+}
+
 // ------------------------------------------------------------------ NodeRef
 
 NodeRef& NodeRef::setPosition(Vec3 position) {

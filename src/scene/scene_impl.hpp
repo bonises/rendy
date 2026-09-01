@@ -39,7 +39,38 @@ struct SceneNode {
     MeshHandle mesh;         // invalid = no mesh
     MaterialHandle material;
     int32_t lightIndex = -1; // into lights
+    int32_t skinIndex = -1;  // into skins; >= 0 = skinned mesh
     bool alive = true;
+};
+
+// ------------------------------------------------------------- animation
+
+struct AnimationChannel {
+    enum class Path : uint8_t { Translation, Rotation, Scale };
+    enum class Interpolation : uint8_t { Step, Linear, CubicSpline };
+    uint32_t node = UINT32_MAX; // scene node index
+    Path path = Path::Translation;
+    Interpolation interpolation = Interpolation::Linear;
+    std::vector<float> times;
+    // vec3 payloads in xyz; rotations as quaternion xyzw. CubicSpline stores
+    // triples per keyframe: inTangent, value, outTangent.
+    std::vector<Vec4> values;
+};
+
+struct SceneAnimation {
+    std::string name;
+    float duration = 0.0f;
+    std::vector<AnimationChannel> channels;
+    // playback state
+    bool playing = false;
+    bool loop = true;
+    float speed = 1.0f;
+    double time = 0.0;
+};
+
+struct Skin {
+    std::vector<uint32_t> jointNodes; // scene node indices, glTF joint order
+    std::vector<Mat4> inverseBind;
 };
 
 struct SceneImpl {
@@ -50,6 +81,8 @@ struct SceneImpl {
     std::vector<uint32_t> lightNodes;   // node index per light
     std::vector<GpuMaterial> materials; // uploaded per frame
     std::vector<AlphaMode> materialAlphaModes; // parallel to materials
+    std::vector<SceneAnimation> animations;
+    std::vector<Skin> skins;
     Color ambient{0.03f, 0.03f, 0.04f, 1.0f};
 
     /// Recompute world matrices (parents are always created before children,
