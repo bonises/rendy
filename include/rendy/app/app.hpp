@@ -29,6 +29,8 @@ struct AppImpl;
 namespace ui {
 class Context;
 }
+class Scene;
+struct Camera;
 
 struct AppConfig {
     std::string title = "rendy";
@@ -55,8 +57,12 @@ public:
     /// Submit and present this frame. Idempotent.
     void present();
 
-    /// The 2D drawing surface for this frame.
+    /// The 2D drawing surface for this frame. Drawn on top of any 3D scene.
     [[nodiscard]] Canvas canvas();
+
+    /// Render a 3D scene with lights, shadows and tonemapping. At most one
+    /// scene per frame; call before present().
+    void draw(Scene& scene, const Camera& camera);
 
 private:
     friend struct detail::AppImpl;
@@ -107,6 +113,7 @@ public:
 
 private:
     friend class ui::Context;
+    friend class Scene;
     explicit App(std::unique_ptr<detail::AppImpl> impl);
     std::unique_ptr<detail::AppImpl> impl_;
 };

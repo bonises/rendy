@@ -13,6 +13,8 @@
 #include "text/glyph_cache.hpp"
 #include "rendy/app/app.hpp"
 #include "rendy/canvas/canvas.hpp"
+#include "rendy/scene/camera.hpp"
+#include "scene/renderer3d.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -30,7 +32,13 @@ struct AppImpl {
     std::unique_ptr<gpu::TexturePool> textures;
     std::unique_ptr<text::GlyphCache> glyphs;
     std::unique_ptr<Renderer2D> renderer2d;
+    std::unique_ptr<Renderer3D> renderer3d;
     CanvasData canvasData;
+
+    // 3D draw request for the frame in progress.
+    SceneImpl* pendingScene = nullptr;
+    Camera pendingCamera;
+    Color clearColor = colors::black;
 
     Input input;
     bool quitRequested = false;

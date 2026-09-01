@@ -89,6 +89,7 @@ AppImpl::~AppImpl() {
     // Tear down strictly in reverse creation order; everything owning GPU
     // resources must die before the allocator/device in `gpu`.
     if (gpu) gpu->waitIdle();
+    renderer3d.reset();
     renderer2d.reset();
     glyphs.reset();
     textures.reset();
@@ -177,40 +178,11 @@ bool AppImpl::pollEvents() {
 Frame AppImpl::beginFrame(const FrameConfig& config) {
     current = frames->begin();
     framePresented = false;
+    pendingScene = nullptr;
+    clearColor = config.clear;
     const VkExtent2D extent = swapchain->extent();
     canvasData.reset(
         {static_cast<float>(extent.width), static_cast<float>(extent.height)});
-
-    if (current.ok) {
-        const Color c = config.clear;
-        gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
-                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                          VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                          VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                          VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-
-        // The swapchain is sRGB: attachment clears want linear values.
-        auto toLinear = [](float srgb) {
-            return srgb <= 0.04045f ? srgb / 12.92f
-                                    : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
-        };
-        VkRenderingAttachmentInfo colorAttachment{};
-        colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        colorAttachment.imageView = swapchain->imageView(current.imageIndex);
-        colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.clearValue.color = {{toLinear(c.r), toLinear(c.g), toLinear(c.b), c.a}};
-
-        VkRenderingInfo renderingInfo{};
-        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        renderingInfo.renderArea = {{0, 0}, swapchain->extent()};
-        renderingInfo.layerCount = 1;
-        renderingInfo.colorAttachmentCount = 1;
-        renderingInfo.pColorAttachments = &colorAttachment;
-        vkCmdBeginRendering(current.cmd, &renderingInfo);
-    }
-
     return Frame(this);
 }
 
@@ -220,8 +192,44 @@ void AppImpl::present() {
 
     if (current.ok) {
         glyphs->flushUploads();
+
+        gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
+                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                          VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+        // 3D first: scene pass → resolve → tonemap fills the swapchain image.
+        const bool has3d = pendingScene != nullptr;
+        if (has3d)
+            renderer3d->render(current.cmd, frames->slot(), *pendingScene, pendingCamera,
+                               swapchain->extent(), swapchain->imageView(current.imageIndex),
+                               *frames);
+
+        // 2D pass on top (clears when there was no 3D underneath).
+        auto toLinear = [](float srgb) {
+            return srgb <= 0.04045f ? srgb / 12.92f
+                                    : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
+        };
+        VkRenderingAttachmentInfo colorAttachment{};
+        colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAttachment.imageView = swapchain->imageView(current.imageIndex);
+        colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachment.loadOp = has3d ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.clearValue.color = {{toLinear(clearColor.r), toLinear(clearColor.g),
+                                             toLinear(clearColor.b), clearColor.a}};
+
+        VkRenderingInfo renderingInfo{};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderingInfo.renderArea = {{0, 0}, swapchain->extent()};
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachments = &colorAttachment;
+        vkCmdBeginRendering(current.cmd, &renderingInfo);
         renderer2d->flush(current.cmd, frames->slot(), canvasData, *frames);
         vkCmdEndRendering(current.cmd);
+
         gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                           VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -250,6 +258,11 @@ void Frame::present() {
 }
 
 Canvas Frame::canvas() { return app_->canvas(); }
+
+void Frame::draw(Scene& scene, const Camera& camera) {
+    app_->pendingScene = scene.impl_.get();
+    app_->pendingCamera = camera;
+}
 
 // --------------------------------------------------------------------- App
 
@@ -295,6 +308,8 @@ Result<App> App::create(const AppConfig& config) {
     impl->glyphs->loadDefaultFonts();
     impl->canvasData.glyphCache = impl->glyphs.get();
     impl->renderer2d = std::make_unique<detail::Renderer2D>(*impl->gpu, *impl->bindless,
+                                                            impl->swapchain->format());
+    impl->renderer3d = std::make_unique<detail::Renderer3D>(*impl->gpu, *impl->bindless,
                                                             impl->swapchain->format());
 
     impl->startTick = impl->lastTick = SDL_GetTicksNS();

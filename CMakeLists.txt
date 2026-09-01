@@ -37,11 +37,19 @@ add_library(rendy STATIC
   src/css/cascade.cpp
   src/ui/yoga_layout.cpp
   src/ui/context.cpp
+  src/scene/primitives.cpp
+  src/scene/mesh_store.cpp
+  src/scene/scene.cpp
+  src/scene/renderer3d.cpp
 )
 
 rendy_compile_shaders(rendy
   shaders/quad2d.vert
   shaders/quad2d.frag
+  shaders/mesh.vert
+  shaders/mesh.frag
+  shaders/tonemap.vert
+  shaders/tonemap.frag
 )
 add_library(rendy::rendy ALIAS rendy)
 
