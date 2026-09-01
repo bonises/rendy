@@ -26,13 +26,14 @@ layout(set = 1, binding = 0) uniform FrameData {
     mat4 view;
     mat4 proj;
     mat4 viewProj;
+    mat4 invViewProj;
     mat4 cascadeMatrices[MAX_CASCADES];
     mat4 spotMatrices[MAX_SPOT_SHADOWS];
     vec4 cascadeSplits; // view-space split depths (positive)
     vec4 viewPos;       // xyz camera position
-    vec4 ambient;       // rgb ambient light
-    uvec4 counts;       // x = light count, y = active cascades
-    vec4 pointShadowParams; // x = near plane used for point shadow projs
+    vec4 ambient;       // rgb flat ambient, w = environment intensity
+    uvec4 counts;       // x = light count, y = active cascades, z = has environment
+    vec4 pointShadowParams; // x = point shadow near plane, y = prefiltered env max mip
 } frame;
 
 layout(std430, set = 1, binding = 1) readonly buffer Transforms { mat4 transforms[]; };

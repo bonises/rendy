@@ -84,7 +84,15 @@ public:
     void setMaterial(NodeId node, MaterialHandle material);
 
     /// Flat ambient light (linear-ish sRGB color, small values look right).
+    /// Used when no environment is set.
     void setAmbient(Color color);
+
+    /// Load an equirectangular .hdr as the environment: skybox background +
+    /// image-based diffuse/specular lighting. Baking blocks for a moment.
+    Result<void> setEnvironment(const std::string& hdrPath, float intensity = 1.0f);
+    void setEnvironmentIntensity(float intensity);
+    /// Back to flat ambient + no skybox.
+    void clearEnvironment();
 
     /// Loads a .gltf/.glb file as a child hierarchy. Returns the root node.
     /// Imports meshes, PBR materials, textures, skins and animations.

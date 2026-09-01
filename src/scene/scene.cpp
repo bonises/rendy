@@ -151,6 +151,31 @@ void Scene::setMaterial(NodeId node, MaterialHandle material) {
 
 void Scene::setAmbient(Color color) { impl_->ambient = color; }
 
+Result<void> Scene::setEnvironment(const std::string& hdrPath, float intensity) {
+    auto baked = detail::bakeEnvironment(*impl_->app->gpu, hdrPath);
+    if (!baked) return baked.error();
+    if (impl_->environment) {
+        // The old maps may be referenced by in-flight frames.
+        auto old = impl_->environment;
+        impl_->app->frames->defer([old] {});
+    }
+    impl_->environment = std::move(baked).value();
+    impl_->environmentIntensity = intensity;
+    return {};
+}
+
+void Scene::setEnvironmentIntensity(float intensity) {
+    impl_->environmentIntensity = intensity;
+}
+
+void Scene::clearEnvironment() {
+    if (impl_->environment) {
+        auto old = impl_->environment;
+        impl_->app->frames->defer([old] {});
+        impl_->environment.reset();
+    }
+}
+
 // Scene::loadGltf lives in gltf.cpp.
 
 // --------------------------------------------------------------- animation

@@ -15,9 +15,13 @@ int main(int argc, char** argv) {
     // instanced cubes to stress the grouped-draw path.
     int stressCount = 0;
     bool vsync = true;
+    const char* envPath = nullptr;
     for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--no-vsync")
+        const std::string_view arg = argv[i];
+        if (arg == "--no-vsync")
             vsync = false;
+        else if (arg.size() > 4 && arg.substr(arg.size() - 4) == ".hdr")
+            envPath = argv[i];
         else
             stressCount = std::atoi(argv[i]);
     }
@@ -31,6 +35,9 @@ int main(int argc, char** argv) {
 
     Scene scene(app);
     scene.setAmbient(Color::rgb(0x1A1C22).fade(1.0f));
+    if (envPath != nullptr) {
+        if (auto set = scene.setEnvironment(envPath); !set) log::warn("{}", set.error().message);
+    }
 
     // Ground.
     auto groundMaterial = scene.createMaterial({.baseColor = Color::rgb(0x8A8D93),

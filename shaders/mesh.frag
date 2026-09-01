@@ -9,6 +9,9 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 layout(set = 1, binding = 4) uniform sampler2DArrayShadow cascadeShadowMaps;
 layout(set = 1, binding = 5) uniform sampler2DArrayShadow spotShadowMaps;
 layout(set = 1, binding = 6) uniform samplerCubeArray pointShadowMaps;
+layout(set = 1, binding = 9) uniform samplerCube irradianceMap;
+layout(set = 1, binding = 10) uniform samplerCube prefilteredMap;
+layout(set = 1, binding = 11) uniform sampler2D brdfLut;
 
 layout(push_constant) uniform PC {
     uint transformIndex;
@@ -218,6 +221,20 @@ void main() {
         radianceSum += (diffuse * (1.0 - fresnel) + specular) * radiance * NoL;
     }
 
-    const vec3 ambient = frame.ambient.rgb * albedo * occlusion;
+    vec3 ambient;
+    if (frame.counts.z == 1u) {
+        // Image-based lighting: irradiance for diffuse, prefiltered + BRDF
+        // LUT split-sum for specular.
+        const vec3 reflected = reflect(-viewDir, shadingNormal);
+        const vec3 irradiance = texture(irradianceMap, shadingNormal).rgb;
+        const vec3 prefiltered =
+            textureLod(prefilteredMap, reflected, roughness * frame.pointShadowParams.y).rgb;
+        const vec2 brdf = texture(brdfLut, vec2(NoV, roughness)).rg;
+        const vec3 diffuseIbl = irradiance * diffuseColor;
+        const vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y);
+        ambient = (diffuseIbl + specularIbl) * occlusion * frame.ambient.w;
+    } else {
+        ambient = frame.ambient.rgb * albedo * occlusion;
+    }
     fragColor = vec4(radianceSum + ambient + emissive, baseColor.a);
 }

@@ -43,6 +43,7 @@ add_library(rendy STATIC
   src/scene/scene.cpp
   src/scene/renderer3d.cpp
   src/scene/gltf.cpp
+  src/scene/environment.cpp
   src/audio/mixer.cpp
   src/audio/audio_impl.cpp
 )
@@ -53,6 +54,13 @@ rendy_compile_shaders(rendy
   shaders/mesh.vert
   shaders/mesh.frag
   shaders/shadow.vert
+  shaders/skybox.vert
+  shaders/skybox.frag
+  shaders/env_bake.vert
+  shaders/env_equirect.frag
+  shaders/env_irradiance.frag
+  shaders/env_prefilter.frag
+  shaders/env_brdf_lut.frag
   shaders/tonemap.vert
   shaders/tonemap.frag
 )

@@ -38,8 +38,9 @@ int main() {
   `.css` files — plus an equivalent typed C++ styling API.
 - **Text**: FreeType glyph atlas tuned for editor-crisp UI text.
 - **3D**: forward PBR (metallic-roughness), directional/point/spot lights,
-  cascaded + cube shadow maps, MSAA, HDR + tonemapping, all basic primitives,
-  glTF 2.0 loading (fastgltf).
+  cascaded + cube shadow maps, HDRI skybox + image-based lighting, MSAA,
+  HDR + tonemapping, transparency, all basic primitives, glTF 2.0 loading
+  with skeletal animation (fastgltf).
 - **Audio**: WAV/OGG playback with a simple mixer (SDL3).
 - **Performance first**: Vulkan 1.3 dynamic rendering, bindless textures,
   per-frame linear allocators, two frames in flight.

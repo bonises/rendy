@@ -16,9 +16,13 @@ using namespace rendy;
 int main(int argc, char** argv) {
     bool vsync = true;
     const char* modelPath = nullptr;
+    const char* envPath = nullptr;
     for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--no-vsync")
+        const std::string_view arg = argv[i];
+        if (arg == "--no-vsync")
             vsync = false;
+        else if (arg.size() > 4 && arg.substr(arg.size() - 4) == ".hdr")
+            envPath = argv[i];
         else
             modelPath = argv[i];
     }
@@ -32,6 +36,10 @@ int main(int argc, char** argv) {
 
     Scene scene(app);
     scene.setAmbient(Color::rgb(0x202430));
+    if (envPath != nullptr) {
+        if (auto set = scene.setEnvironment(envPath); !set)
+            log::warn("{}", set.error().message);
+    }
 
     auto ground = scene.createMaterial({.baseColor = Color::rgb(0x3A3D45), .roughness = 0.85f});
     scene.addMesh(primitives::plane({30.0f, 30.0f}), ground,

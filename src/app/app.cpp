@@ -382,8 +382,8 @@ Result<App> App::create(const AppConfig& config) {
     impl->canvasData.glyphCache = impl->glyphs.get();
     impl->renderer2d = std::make_unique<detail::Renderer2D>(*impl->gpu, *impl->bindless,
                                                             impl->swapchain->format());
-    impl->renderer3d = std::make_unique<detail::Renderer3D>(*impl->gpu, *impl->bindless,
-                                                            impl->swapchain->format());
+    impl->renderer3d = std::make_unique<detail::Renderer3D>(
+        *impl->gpu, *impl->bindless, *impl->uploader, impl->swapchain->format());
 #ifdef RENDY_SHADER_HOT_RELOAD
     impl->initShaderWatch();
 #endif

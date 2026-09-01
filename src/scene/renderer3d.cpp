@@ -3,6 +3,8 @@
 #include "shaders/mesh_frag_spv.h"
 #include "shaders/mesh_vert_spv.h"
 #include "shaders/shadow_vert_spv.h"
+#include "shaders/skybox_frag_spv.h"
+#include "shaders/skybox_vert_spv.h"
 #include "shaders/tonemap_frag_spv.h"
 #include "shaders/tonemap_vert_spv.h"
 
@@ -18,6 +20,7 @@ struct FrameUbo {
     Mat4 view;
     Mat4 proj;
     Mat4 viewProj;
+    Mat4 invViewProj;
     Mat4 cascadeMatrices[Renderer3D::kMaxCascades];
     Mat4 spotMatrices[Renderer3D::kMaxSpotShadows];
     Vec4 cascadeSplits;
@@ -88,10 +91,11 @@ struct FrustumPlanes {
 } // namespace
 
 Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
-                       VkFormat swapchainFormat)
+                       gpu::Uploader& uploader, VkFormat swapchainFormat)
     : ctx_(ctx), bindless_(bindless) {
-    // Set 1: UBO + transforms/materials/lights/joints + 3 shadow map arrays.
-    VkDescriptorSetLayoutBinding bindings[8]{};
+    // Set 1: UBO + transforms/materials/lights/joints + 3 shadow map arrays
+    // + environment cubes (8,9,10) + BRDF LUT (11).
+    VkDescriptorSetLayoutBinding bindings[12]{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     for (uint32_t i = 1; i < 4; ++i)
@@ -102,17 +106,20 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
                        VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    for (uint32_t i = 8; i < 12; ++i)
+        bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 8;
+    layoutInfo.bindingCount = 12;
     layoutInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &frameSetLayout_));
 
     VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, gpu::kFramesInFlight},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * gpu::kFramesInFlight},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * gpu::kFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * gpu::kFramesInFlight},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -154,12 +161,86 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     createShadowArray(&spotShadows_, 1024, kMaxSpotShadows, false);
     createShadowArray(&pointShadows_, 512, kMaxPointShadows * 6, true);
 
+    // Default environment: 1x1 black cube + LUT keep bindings 8-11 valid
+    // when no environment is set.
+    {
+        VkImageCreateInfo cubeInfo{};
+        cubeInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        cubeInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        cubeInfo.imageType = VK_IMAGE_TYPE_2D;
+        cubeInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        cubeInfo.extent = {1, 1, 1};
+        cubeInfo.mipLevels = 1;
+        cubeInfo.arrayLayers = 6;
+        cubeInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        cubeInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo allocCreate{};
+        allocCreate.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        VK_CHECK(vmaCreateImage(ctx_.allocator(), &cubeInfo, &allocCreate, &defaultEnv_.cube,
+                                &defaultEnv_.cubeAllocation, nullptr));
+        VkImageCreateInfo lutInfo = cubeInfo;
+        lutInfo.flags = 0;
+        lutInfo.format = VK_FORMAT_R16G16_SFLOAT;
+        lutInfo.arrayLayers = 1;
+        VK_CHECK(vmaCreateImage(ctx_.allocator(), &lutInfo, &allocCreate, &defaultEnv_.lut,
+                                &defaultEnv_.lutAllocation, nullptr));
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = defaultEnv_.cube;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        viewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+        VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &defaultEnv_.cubeView));
+        viewInfo.image = defaultEnv_.lut;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R16G16_SFLOAT;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &defaultEnv_.lutView));
+
+        VkSamplerCreateInfo defSampler{};
+        defSampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        defSampler.magFilter = VK_FILTER_LINEAR;
+        defSampler.minFilter = VK_FILTER_LINEAR;
+        defSampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        defSampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        defSampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        defSampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        defSampler.maxLod = VK_LOD_CLAMP_NONE;
+        VK_CHECK(vkCreateSampler(ctx_.device(), &defSampler, nullptr, &defaultEnv_.sampler));
+
+        // Clear both to black and move to SHADER_READ.
+        const uint8_t zero = 0;
+        uploader.submit(&zero, 1, [&](VkCommandBuffer cmd, VkBuffer) {
+            for (VkImage image : {defaultEnv_.cube, defaultEnv_.lut}) {
+                gpu::imageBarrier(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                                  VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                const VkClearColorValue black{{0.0f, 0.0f, 0.0f, 1.0f}};
+                const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                                                    VK_REMAINING_ARRAY_LAYERS};
+                vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black,
+                                     1, &range);
+                gpu::imageBarrier(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                  VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            }
+        });
+    }
+
     swapchainFormat_ = swapchainFormat;
     meshVertBlob_ = gpu::ShaderBlob(mesh_vert_spv, mesh_vert_spv_words);
     meshFragBlob_ = gpu::ShaderBlob(mesh_frag_spv, mesh_frag_spv_words);
     tonemapVertBlob_ = gpu::ShaderBlob(tonemap_vert_spv, tonemap_vert_spv_words);
     tonemapFragBlob_ = gpu::ShaderBlob(tonemap_frag_spv, tonemap_frag_spv_words);
     shadowVertBlob_ = gpu::ShaderBlob(shadow_vert_spv, shadow_vert_spv_words);
+    skyboxVertBlob_ = gpu::ShaderBlob(skybox_vert_spv, skybox_vert_spv_words);
+    skyboxFragBlob_ = gpu::ShaderBlob(skybox_frag_spv, skybox_frag_spv_words);
     createLayouts();
     createPipelines();
 }
@@ -235,14 +316,16 @@ bool Renderer3D::reloadShader(std::string_view name, std::vector<uint32_t> spirv
     else if (name == "tonemap.vert") blob = &tonemapVertBlob_;
     else if (name == "tonemap.frag") blob = &tonemapFragBlob_;
     else if (name == "shadow.vert") blob = &shadowVertBlob_;
+    else if (name == "skybox.vert") blob = &skyboxVertBlob_;
+    else if (name == "skybox.frag") blob = &skyboxFragBlob_;
     else return false;
     blob->replace(std::move(spirv));
 
     // Rebuild everything from the current blobs; cheap with the pipeline
     // cache, and keeps the reload path to a single code path.
     VkDevice device = ctx_.device();
-    for (VkPipeline pipeline :
-         {meshPipeline_, meshBlendPipeline_, tonemapPipeline_, shadowPipeline_}) {
+    for (VkPipeline pipeline : {meshPipeline_, meshBlendPipeline_, tonemapPipeline_,
+                                shadowPipeline_, skyboxPipeline_}) {
         frames.defer([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
     }
     createPipelines();
@@ -277,6 +360,12 @@ Renderer3D::~Renderer3D() {
     for (auto& buffer : jointBuffers_)
         if (buffer.buffer) vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
     vkDestroySampler(ctx_.device(), resolveSampler_, nullptr);
+    vkDestroyImageView(ctx_.device(), defaultEnv_.cubeView, nullptr);
+    vkDestroyImageView(ctx_.device(), defaultEnv_.lutView, nullptr);
+    vmaDestroyImage(ctx_.allocator(), defaultEnv_.cube, defaultEnv_.cubeAllocation);
+    vmaDestroyImage(ctx_.allocator(), defaultEnv_.lut, defaultEnv_.lutAllocation);
+    vkDestroySampler(ctx_.device(), defaultEnv_.sampler, nullptr);
+    vkDestroyPipeline(ctx_.device(), skyboxPipeline_, nullptr);
     vkDestroyPipeline(ctx_.device(), meshBlendPipeline_, nullptr);
     vkDestroyPipeline(ctx_.device(), meshPipeline_, nullptr);
     vkDestroyPipelineLayout(ctx_.device(), meshLayout_, nullptr);
@@ -488,6 +577,49 @@ void Renderer3D::createPipelines() {
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo, nullptr,
                                        &shadowPipeline_));
     vkDestroyShaderModule(ctx_.device(), shadowVert, nullptr);
+
+    // ---- skybox pipeline (fullscreen, drawn at far depth into the HDR pass)
+    VkShaderModule skyboxVert =
+        createModule(ctx_.device(), skyboxVertBlob_.data, skyboxVertBlob_.words);
+    VkShaderModule skyboxFrag =
+        createModule(ctx_.device(), skyboxFragBlob_.data, skyboxFragBlob_.words);
+    VkPipelineShaderStageCreateInfo skyboxStages[2]{};
+    skyboxStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    skyboxStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    skyboxStages[0].module = skyboxVert;
+    skyboxStages[0].pName = "main";
+    skyboxStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    skyboxStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    skyboxStages[1].module = skyboxFrag;
+    skyboxStages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo skyboxInput{};
+    skyboxInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineRasterizationStateCreateInfo skyboxRaster = raster;
+    skyboxRaster.cullMode = VK_CULL_MODE_NONE;
+    VkPipelineDepthStencilStateCreateInfo skyboxDepth = depthStencil;
+    skyboxDepth.depthWriteEnable = VK_FALSE;
+    skyboxDepth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL; // z == 1 passes clear
+    VkPipelineRenderingCreateInfo skyboxRendering{};
+    skyboxRendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    skyboxRendering.colorAttachmentCount = 1;
+    VkFormat hdr = kHdrFormat;
+    skyboxRendering.pColorAttachmentFormats = &hdr;
+    skyboxRendering.depthAttachmentFormat = kDepthFormat;
+
+    pipelineInfo.pNext = &skyboxRendering;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = skyboxStages;
+    pipelineInfo.pVertexInputState = &skyboxInput;
+    pipelineInfo.pRasterizationState = &skyboxRaster;
+    pipelineInfo.pMultisampleState = &multisample; // MSAA like the scene pass
+    pipelineInfo.pDepthStencilState = &skyboxDepth;
+    pipelineInfo.pColorBlendState = &blend;
+    pipelineInfo.layout = meshLayout_;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo,
+                                       nullptr, &skyboxPipeline_));
+    vkDestroyShaderModule(ctx_.device(), skyboxVert, nullptr);
+    vkDestroyShaderModule(ctx_.device(), skyboxFrag, nullptr);
 }
 
 void Renderer3D::destroyTargets() {
@@ -587,14 +719,26 @@ void Renderer3D::updateDescriptors(uint32_t slot) {
         {lightBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
         {jointBuffers_[slot].buffer, 0, VK_WHOLE_SIZE},
     };
-    VkDescriptorImageInfo imageInfos[3] = {
+    // Environment bindings fall back to the built-in black maps.
+    const EnvironmentData* env = boundEnvironment_;
+    const VkImageView envView = env ? env->environment.view : defaultEnv_.cubeView;
+    const VkImageView irrView = env ? env->irradiance.view : defaultEnv_.cubeView;
+    const VkImageView preView = env ? env->prefiltered.view : defaultEnv_.cubeView;
+    const VkImageView lutView = env ? env->brdfLutView : defaultEnv_.lutView;
+    const VkSampler envSampler = env ? env->sampler : defaultEnv_.sampler;
+
+    VkDescriptorImageInfo imageInfos[7] = {
         {shadowSampler_, cascadeShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
         {shadowSampler_, spotShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
         {pointShadowSampler_, pointShadows_.sampleView,
          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+        {envSampler, envView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {envSampler, irrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {envSampler, preView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {envSampler, lutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
-    VkWriteDescriptorSet writes[8]{};
-    for (uint32_t i = 0; i < 8; ++i) {
+    VkWriteDescriptorSet writes[12]{};
+    for (uint32_t i = 0; i < 12; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = frameSets_[slot];
         writes[i].dstBinding = i;
@@ -605,10 +749,10 @@ void Renderer3D::updateDescriptors(uint32_t slot) {
             writes[i].pBufferInfo = &bufferInfos[i == 7 ? 4 : i];
         } else {
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[i].pImageInfo = &imageInfos[i - 4];
+            writes[i].pImageInfo = &imageInfos[i < 7 ? i - 4 : i - 5];
         }
     }
-    vkUpdateDescriptorSets(ctx_.device(), 8, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx_.device(), 12, writes, 0, nullptr);
     descriptorsDirty_[slot] = false;
 }
 
@@ -665,8 +809,18 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     ubo.view = camera.view();
     ubo.proj = camera.proj(aspect);
     ubo.viewProj = ubo.proj * ubo.view;
+    ubo.invViewProj = glm::inverse(ubo.viewProj);
     ubo.viewPos = Vec4{camera.position, 1.0f};
-    ubo.ambient = Vec4{scene.ambient.r, scene.ambient.g, scene.ambient.b, 1.0f};
+    ubo.ambient =
+        Vec4{scene.ambient.r, scene.ambient.g, scene.ambient.b, scene.environmentIntensity};
+
+    // Rebind descriptors when the environment changes.
+    if (scene.environment.get() != boundEnvironment_) {
+        boundEnvironment_ = scene.environment.get();
+        for (bool& dirty : descriptorsDirty_) dirty = true;
+    }
+    ubo.counts.z = boundEnvironment_ != nullptr ? 1u : 0u;
+    ubo.pointShadowParams.y = static_cast<float>(kPrefilterMips - 1);
 
     const FrustumPlanes frustum(ubo.viewProj);
 
@@ -1046,7 +1200,8 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    if (!draws.empty() || !skinnedDraws.empty() || !blendDraws.empty()) {
+    if (!draws.empty() || !skinnedDraws.empty() || !blendDraws.empty() ||
+        boundEnvironment_ != nullptr) {
         const VkDescriptorSet sets[] = {bindless_.set(), frameSets_[slot]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshLayout_, 0, 2, sets, 0,
                                 nullptr);
@@ -1071,6 +1226,10 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline_);
             recordDraws(draws);
             recordDraws(skinnedDraws);
+        }
+        if (boundEnvironment_ != nullptr) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline_);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
         }
         if (!blendDraws.empty()) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshBlendPipeline_);

@@ -111,6 +111,13 @@ mtime change (debug builds).
   (light matrix in push constants), sampled via compare samplers (PCF 3×3)
   and, for cubes, a manual depth-reference compare. Cascades use practical
   splits (λ=0.75), sphere-fit + texel snapping for stability.
+- **Environment/IBL** (`scene/environment.*`): `setEnvironment` bakes an
+  equirect HDR once with transient graphics pipelines — env cubemap (512³,
+  mipped), cosine irradiance (32³), GGX-prefiltered chain (256³, 6 mips,
+  roughness per mip), split-sum BRDF LUT (512²) — bound at set 1 bindings
+  8–11 (1×1 black defaults otherwise). The skybox draws as a fullscreen
+  triangle at far depth inside the HDR pass; `mesh.frag` swaps flat ambient
+  for irradiance + prefiltered-specular when `counts.z` is set.
 - **Post**: HDR RGBA16F 4×MSAA → resolve (registered bindlessly) → tonemap
   fullscreen triangle (Khronos PBR Neutral / ACES / off + exposure) into the
   swapchain.

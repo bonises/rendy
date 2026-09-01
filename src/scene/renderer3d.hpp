@@ -8,6 +8,7 @@
 #include "gpu/context.hpp"
 #include "gpu/frame.hpp"
 #include "gpu/shader_blob.hpp"
+#include "gpu/upload.hpp"
 #include "scene/scene_impl.hpp"
 #include "rendy/scene/camera.hpp"
 
@@ -17,7 +18,8 @@ namespace rendy::detail {
 
 class Renderer3D {
 public:
-    Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless, VkFormat swapchainFormat);
+    Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless, gpu::Uploader& uploader,
+               VkFormat swapchainFormat);
     ~Renderer3D();
 
     Renderer3D(const Renderer3D&) = delete;
@@ -88,9 +90,24 @@ private:
     VkPipelineLayout tonemapLayout_ = VK_NULL_HANDLE;
     VkPipeline tonemapPipeline_ = VK_NULL_HANDLE;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
+    VkPipeline skyboxPipeline_ = VK_NULL_HANDLE;
     VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
     gpu::ShaderBlob meshVertBlob_, meshFragBlob_, tonemapVertBlob_, tonemapFragBlob_,
-        shadowVertBlob_;
+        shadowVertBlob_, skyboxVertBlob_, skyboxFragBlob_;
+
+    // Environment (IBL) binding state. Defaults are 1x1 black so the
+    // descriptors are always valid.
+    struct DefaultEnv {
+        VkImage cube = VK_NULL_HANDLE;
+        VmaAllocation cubeAllocation = VK_NULL_HANDLE;
+        VkImageView cubeView = VK_NULL_HANDLE;
+        VkImage lut = VK_NULL_HANDLE;
+        VmaAllocation lutAllocation = VK_NULL_HANDLE;
+        VkImageView lutView = VK_NULL_HANDLE;
+        VkSampler sampler = VK_NULL_HANDLE;
+    };
+    DefaultEnv defaultEnv_;
+    const EnvironmentData* boundEnvironment_ = nullptr;
 
     // Shadow map storage (fixed size, created up front).
     struct ShadowArray {

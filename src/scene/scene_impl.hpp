@@ -3,6 +3,7 @@
 // Scene internals: flat node array (SoA-ish), CPU material/light mirrors.
 
 #include "scene/animation_sampler.hpp"
+#include "scene/environment.hpp"
 #include "scene/mesh_store.hpp"
 #include "rendy/scene/light.hpp"
 #include "rendy/scene/material.hpp"
@@ -73,6 +74,8 @@ struct SceneImpl {
     std::vector<AlphaMode> materialAlphaModes; // parallel to materials
     std::vector<SceneAnimation> animations;
     std::vector<Skin> skins;
+    std::shared_ptr<EnvironmentData> environment; // null = flat ambient
+    float environmentIntensity = 1.0f;
     Color ambient{0.03f, 0.03f, 0.04f, 1.0f};
 
     /// Recompute world matrices (parents are always created before children,
