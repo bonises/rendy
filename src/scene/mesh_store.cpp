@@ -63,14 +63,21 @@ void MeshStore::ensureRoom(size_t vertexBytes, size_t indexBytes) {
     createBuffer(ctx_, newIndexCapacity, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &newIndex,
                  &newIndexAlloc);
 
+    // ensureRoom runs AFTER the new mesh's blocks were allocated, so end()
+    // can already include the (still unwritten) new region — clamp the copy
+    // to the old buffer, which holds all previously written data.
+    const size_t copyVertexBytes =
+        std::min(vertexAlloc_.end() * sizeof(Vertex), vertexCapacity_);
+    const size_t copyIndexBytes =
+        std::min(indexAlloc_.end() * sizeof(uint32_t), indexCapacity_);
     const uint8_t dummy = 0;
     uploader_.submit(&dummy, 1, [&](VkCommandBuffer cmd, VkBuffer) {
-        if (vertexAlloc_.end() > 0) {
-            VkBufferCopy copy{0, 0, vertexAlloc_.end() * sizeof(Vertex)};
+        if (copyVertexBytes > 0) {
+            VkBufferCopy copy{0, 0, copyVertexBytes};
             vkCmdCopyBuffer(cmd, vertexBuffer_, newVertex, 1, &copy);
         }
-        if (indexAlloc_.end() > 0) {
-            VkBufferCopy copy{0, 0, indexAlloc_.end() * sizeof(uint32_t)};
+        if (copyIndexBytes > 0) {
+            VkBufferCopy copy{0, 0, copyIndexBytes};
             vkCmdCopyBuffer(cmd, indexBuffer_, newIndex, 1, &copy);
         }
     });
