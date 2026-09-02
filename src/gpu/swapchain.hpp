@@ -20,6 +20,10 @@ public:
     /// is currently zero-sized (minimized) — caller should skip the frame.
     bool recreate();
 
+    /// Screenshot readback possible? (Needs surface TRANSFER_SRC support
+    /// and one of the two 8-bit sRGB formats — both optional in Vulkan.)
+    bool captureSupported() const { return captureSupported_; }
+
     VkSwapchainKHR handle() const { return swapchain_; }
     VkFormat format() const { return format_; }
     VkExtent2D extent() const { return extent_; }
@@ -34,6 +38,8 @@ private:
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkFormat format_ = VK_FORMAT_B8G8R8A8_SRGB;
+    bool formatCapturable_ = false; ///< 8-bit sRGB, 4 bytes/pixel
+    bool captureSupported_ = false; ///< formatCapturable_ && TRANSFER_SRC usage
     VkColorSpaceKHR colorSpace_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkExtent2D extent_{};
     bool vsync_ = true;

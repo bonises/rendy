@@ -1,26 +1,32 @@
 #include "gpu/swapchain.hpp"
 
+#include "gpu/swapchain_select.hpp"
+#include "rendy/core/log.hpp"
+
 #include <algorithm>
 
 namespace rendy::gpu {
 
 Swapchain::Swapchain(Context& ctx, VkSurfaceKHR surface, bool vsync)
     : ctx_(ctx), surface_(surface), vsync_(vsync) {
-    // Pick format once: prefer BGRA8 sRGB, else first available.
+    // Pick format once: an 8-bit sRGB format the whole pipeline supports.
     uint32_t formatCount = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(ctx_.physicalDevice(), surface_, &formatCount, nullptr);
     std::vector<VkSurfaceFormatKHR> formats(formatCount);
     vkGetPhysicalDeviceSurfaceFormatsKHR(ctx_.physicalDevice(), surface_, &formatCount,
                                          formats.data());
-    format_ = formats[0].format;
-    colorSpace_ = formats[0].colorSpace;
-    for (const auto& f : formats) {
-        if (f.format == VK_FORMAT_B8G8R8A8_SRGB &&
-            f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            format_ = f.format;
-            colorSpace_ = f.colorSpace;
-            break;
-        }
+    if (const auto chosen = chooseSurfaceFormat(formats)) {
+        format_ = chosen->format;
+        colorSpace_ = chosen->colorSpace;
+        formatCapturable_ = true;
+    } else {
+        // Exotic surface (no 8-bit sRGB): colors will be off and readback
+        // is disabled, but rendering still works. Unheard of on desktop.
+        format_ = formats[0].format;
+        colorSpace_ = formats[0].colorSpace;
+        formatCapturable_ = false;
+        log::warn("swapchain: no 8-bit sRGB surface format — colors degrade, "
+                  "screenshots disabled (format {})", static_cast<int>(format_));
     }
     recreate();
 }
@@ -78,9 +84,11 @@ bool Swapchain::recreate() {
     info.imageColorSpace = colorSpace_;
     info.imageExtent = extent;
     info.imageArrayLayers = 1;
-    // TRANSFER_SRC enables screenshot readback (App::requestScreenshot).
-    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    // Transfer usage only where the surface supports it (optional in
+    // Vulkan); TRANSFER_SRC enables screenshot readback.
+    info.imageUsage = chooseSwapchainUsage(caps.supportedUsageFlags);
+    captureSupported_ =
+        formatCapturable_ && (info.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = caps.currentTransform;
     info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;

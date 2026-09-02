@@ -39,7 +39,10 @@ struct AppConfig {
     bool resizable = true;
     bool vsync = true;
     bool validation = false; ///< force Vulkan validation (also RENDY_VULKAN_VALIDATION build opt)
-    bool hidden = false;     ///< create the window hidden (offscreen tests/tools)
+    /// Create the window hidden — no taskbar/screen presence, but NOT
+    /// headless: a working windowing system + Vulkan surface is still
+    /// required (tests/tools on a desktop, not bare CI runners).
+    bool hidden = false;
 };
 
 /// A captured frame (see App::requestScreenshot).

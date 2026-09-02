@@ -18,7 +18,8 @@ constexpr IVec2 kSize{640, 360};
 App makeApp() {
     auto app = App::create({.title = "gpu-test", .size = kSize, .vsync = false,
                             .hidden = true});
-    REQUIRE(app.hasValue());
+    if (!app) // surface the actual error: headless vs driver failures differ
+        FAIL("App::create failed: " << app.error().message);
     return std::move(app.value());
 }
 

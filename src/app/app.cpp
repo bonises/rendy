@@ -305,6 +305,12 @@ void AppImpl::present() {
         renderer2d->flush(current.cmd, frames->slot(), canvasData, *frames);
         vkCmdEndRendering(current.cmd);
 
+        if (captureRequested && !swapchain->captureSupported()) {
+            // TRANSFER_SRC on swapchain images (or an 8-bit sRGB format)
+            // is optional in Vulkan — degrade to a plain error.
+            log::warn("screenshot: this surface doesn't support readback");
+            captureRequested = false;
+        }
         if (captureRequested) {
             // Screenshot: copy the finished frame into a host-visible
             // buffer on its way to present.
@@ -363,11 +369,15 @@ void AppImpl::present() {
         capture.size = {static_cast<int>(extent.width), static_cast<int>(extent.height)};
         capture.rgba.resize(static_cast<size_t>(extent.width) * extent.height * 4);
         const auto* src = static_cast<const uint8_t*>(captureMapped);
-        for (size_t i = 0; i < capture.rgba.size(); i += 4) { // BGRA → RGBA
-            capture.rgba[i + 0] = src[i + 2];
-            capture.rgba[i + 1] = src[i + 1];
-            capture.rgba[i + 2] = src[i + 0];
-            capture.rgba[i + 3] = src[i + 3];
+        if (swapchain->format() == VK_FORMAT_B8G8R8A8_SRGB) {
+            for (size_t i = 0; i < capture.rgba.size(); i += 4) { // BGRA → RGBA
+                capture.rgba[i + 0] = src[i + 2];
+                capture.rgba[i + 1] = src[i + 1];
+                capture.rgba[i + 2] = src[i + 0];
+                capture.rgba[i + 3] = src[i + 3];
+            }
+        } else { // R8G8B8A8_SRGB — captureSupported() allows no other formats
+            std::memcpy(capture.rgba.data(), src, capture.rgba.size());
         }
         captureRequested = false;
         captureReady = true;

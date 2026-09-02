@@ -14,6 +14,7 @@ add_executable(rendy_tests
   css/test_transitions.cpp
   css/test_animations.cpp
   canvas/test_snapshot.cpp
+  gpu/test_swapchain_select.cpp
   layout/test_layout.cpp
   layout/test_text_edit.cpp
   scene/test_animation.cpp
@@ -21,7 +22,8 @@ add_executable(rendy_tests
   audio/test_mixer.cpp
 )
 target_include_directories(rendy_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(rendy_tests PRIVATE yogacore)
+# yoga for the layout tests; volk headers for the swapchain-selection test.
+target_link_libraries(rendy_tests PRIVATE yogacore volk::volk)
 
 target_link_libraries(rendy_tests PRIVATE rendy::rendy Catch2::Catch2WithMain rendy::warnings)
 

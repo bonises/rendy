@@ -29,23 +29,30 @@ foreach(_target ${_rendy_bundle_candidates})
   endif()
 endforeach()
 
-set(_rendy_mri "create ${CMAKE_BINARY_DIR}/librendy_bundled.a\n")
+# Config-separated paths: multi-config generators build one bundle per
+# configuration (and $<TARGET_FILE:> resolves per config); single-config
+# generators just get one subdirectory.
+set(_rendy_bundle_dir "${CMAKE_BINARY_DIR}/bundle/$<CONFIG>")
+set(_rendy_bundle "${_rendy_bundle_dir}/librendy_bundled.a")
+set(_rendy_mri_path "${_rendy_bundle_dir}/rendy_bundle.mri")
+
+set(_rendy_mri "create ${_rendy_bundle}\n")
 foreach(_target ${_rendy_bundle_targets})
   string(APPEND _rendy_mri "addlib $<TARGET_FILE:${_target}>\n")
 endforeach()
 string(APPEND _rendy_mri "save\nend\n")
-file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/rendy_bundle.mri" CONTENT "${_rendy_mri}")
+file(GENERATE OUTPUT "${_rendy_mri_path}" CONTENT "${_rendy_mri}")
 
 add_custom_command(
-  OUTPUT "${CMAKE_BINARY_DIR}/librendy_bundled.a"
-  COMMAND sh -c "'${CMAKE_AR}' -M < '${CMAKE_BINARY_DIR}/rendy_bundle.mri'"
-  DEPENDS ${_rendy_bundle_targets} "${CMAKE_BINARY_DIR}/rendy_bundle.mri"
+  OUTPUT "${_rendy_bundle}"
+  COMMAND sh -c "'${CMAKE_AR}' -M < '${_rendy_mri_path}'"
+  DEPENDS ${_rendy_bundle_targets} "${_rendy_mri_path}"
   COMMENT "Bundling librendy.a with its static dependencies"
   VERBATIM)
-add_custom_target(rendy_bundled ALL DEPENDS "${CMAKE_BINARY_DIR}/librendy_bundled.a")
+add_custom_target(rendy_bundled ALL DEPENDS "${_rendy_bundle}")
 
 # ---- install rules --------------------------------------------------------
-install(FILES "${CMAKE_BINARY_DIR}/librendy_bundled.a"
+install(FILES "${_rendy_bundle}"
         DESTINATION ${CMAKE_INSTALL_LIBDIR} RENAME librendy.a)
 install(DIRECTORY include/rendy DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 # fmt and glm are rendy's two public dependencies (log.hpp / math.hpp) —
