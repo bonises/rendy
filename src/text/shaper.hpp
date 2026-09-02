@@ -5,8 +5,11 @@
 // reordering). Uses hb-ot font functions on the raw font file — FreeType
 // stays the rasterizer, so this class is GPU-free and unit-testable.
 //
-// Direction/script are guessed per line (hb_buffer_guess_segment_properties);
-// full bidi (mixed LTR/RTL in one string) is out of scope for v1.
+// Full bidi (UAX#9): SheenBidi computes embedding levels per line (base
+// direction auto-detected from the first strong character, LTR default),
+// each level run shapes through HarfBuzz in its own direction, and rule L2
+// reorders the runs so the output glyph stream is in visual order.
+// Script is guessed per run (hb_buffer_guess_segment_properties).
 
 #include "rendy/core/result.hpp"
 
@@ -52,12 +55,12 @@ public:
     bool shape(uint32_t fontId, float pixelSize, std::string_view utf8,
                std::vector<ShapedGlyph>* out);
 
-    /// A maximal same-direction slice of one line (internal, exposed for
-    /// the run splitter).
-    struct DirectionRun {
+    /// A maximal same-embedding-level slice of one line (internal, exposed
+    /// for the run splitter). Odd levels are RTL.
+    struct LevelRun {
         size_t start = 0;
         size_t end = 0;
-        bool rtl = false;
+        uint8_t level = 0;
     };
 
 private:
@@ -68,7 +71,7 @@ private:
     };
     std::vector<Font> fonts_;
     hb_buffer_t* buffer_ = nullptr;
-    std::vector<DirectionRun> runs_;
+    std::vector<LevelRun> runs_;
 };
 
 } // namespace rendy::text

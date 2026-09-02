@@ -92,6 +92,7 @@ target_link_libraries(rendy
     stb::stb
     freetype
     harfbuzz
+    sheenbidi::sheenbidi
     yogacore
     fastgltf::fastgltf
     draco::draco

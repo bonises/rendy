@@ -127,6 +127,16 @@ FetchContent_Declare(basisu
   SOURCE_SUBDIR cmake_unused_subdir
   SYSTEM EXCLUDE_FROM_ALL)
 
+# --------------------------------------------------------- SheenBidi v2.9.0
+# UAX#9 bidi levels for mixed LTR/RTL text (the shaper reorders runs with
+# them). Upstream's build files are skipped (nonexistent SOURCE_SUBDIR, like
+# basisu); a small unity-build static lib is added below.
+FetchContent_Declare(sheenbidi
+  GIT_REPOSITORY https://github.com/Tehreer/SheenBidi
+  GIT_TAG 83f77108a2873600283f6da4b326a2dca7a3a7a6 # v2.9.0
+  SOURCE_SUBDIR cmake_unused_subdir
+  SYSTEM EXCLUDE_FROM_ALL)
+
 # ------------------------------------------------------- stb (no build files)
 FetchContent_Declare(stb
   GIT_REPOSITORY https://github.com/nothings/stb
@@ -146,7 +156,7 @@ set(VULKAN_HEADERS_INSTALL_DIR "${vulkanheaders_SOURCE_DIR}" CACHE PATH "" FORCE
 FetchContent_MakeAvailable(
   fmt glm Catch2 SDL3
   volk VulkanMemoryAllocator glslang
-  freetype harfbuzz yoga fastgltf draco basisu stb dr_libs)
+  freetype harfbuzz yoga fastgltf draco basisu sheenbidi stb dr_libs)
 
 # draco's CMake does not export include directories on its targets; the
 # generated draco_features.h lands in ${CMAKE_BINARY_DIR}/draco/.
@@ -166,6 +176,12 @@ target_include_directories(basisu_transcoder SYSTEM PUBLIC
 target_compile_definitions(basisu_transcoder PUBLIC
   BASISD_SUPPORT_KTX2=1 BASISD_SUPPORT_KTX2_ZSTD=1)
 add_library(basisu::transcoder ALIAS basisu_transcoder)
+
+# SheenBidi unity build (SBBase.c etc. all included by SheenBidi.c).
+add_library(sheenbidi_lib STATIC ${sheenbidi_SOURCE_DIR}/Source/SheenBidi.c)
+target_include_directories(sheenbidi_lib SYSTEM PUBLIC ${sheenbidi_SOURCE_DIR}/Headers)
+target_compile_definitions(sheenbidi_lib PRIVATE SB_CONFIG_UNITY)
+add_library(sheenbidi::sheenbidi ALIAS sheenbidi_lib)
 
 # Header-only interface targets for the buildless deps.
 add_library(stb_headers INTERFACE)

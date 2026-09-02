@@ -14,8 +14,8 @@ include(CMakePackageConfigHelpers)
 # ---- the bundle: every static-library target rendy links ------------------
 set(_rendy_bundle_targets rendy)
 set(_rendy_bundle_candidates
-  SDL3-static SDL_uclibc volk fmt freetype harfbuzz yogacore fastgltf
-  draco draco_static basisu_transcoder glm)
+  SDL3-static SDL_uclibc volk fmt freetype harfbuzz sheenbidi_lib yogacore
+  fastgltf draco draco_static basisu_transcoder glm)
 if(RENDY_SHADER_HOT_RELOAD)
   list(APPEND _rendy_bundle_candidates glslang SPIRV glslang-default-resource-limits
     MachineIndependent GenericCodeGen OSDependent glslang-resource-limits SPVRemapper)

@@ -8,7 +8,8 @@
 //
 // Selection rectangles built from two caretX() values are correct for
 // single-direction text; a selection spanning mixed-direction runs is
-// approximated by one rect (known v1 limitation, like run-order bidi).
+// approximated by one rect (known limitation — visually it should be
+// several discontiguous rects).
 
 #include "text/shaper.hpp"
 #include "text/utf8.hpp"

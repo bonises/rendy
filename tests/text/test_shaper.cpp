@@ -88,3 +88,43 @@ TEST_CASE("shaper applies contextual arabic forms", "[text][shaper]") {
     REQUIRE(glyphs[0].cluster == 0);  // 'h'
     REQUIRE(glyphs[4].cluster >= 13); // first RTL-run glyph = leftmost = last word
 }
+
+TEST_CASE("full bidi reorders runs in an RTL-base paragraph", "[text][shaper]") {
+    const char* fontPath = dejaVu();
+    if (fontPath == nullptr) {
+        SUCCEED("no system DejaVu font — skipping");
+        return;
+    }
+    Shaper shaper;
+    const uint32_t id = shaper.loadFont(fontPath).value();
+
+    // "سلام abc عليكم": the first strong character is Arabic, so the base
+    // direction is RTL. Visually the line reads right-to-left: سلام
+    // rightmost, عليكم leftmost, "abc" LTR in the middle. Byte offsets:
+    // سلام = 0..7, space 8, abc = 9..11, space 12, عليكم = 13..22.
+    std::vector<ShapedGlyph> glyphs;
+    REQUIRE(shaper.shape(id, 16.0f, "سلام abc عليكم", &glyphs));
+    REQUIRE(glyphs.size() >= 9);
+    // Leftmost glyph comes from the logically-last word…
+    REQUIRE(glyphs.front().cluster >= 13);
+    // …and the rightmost from the first word.
+    REQUIRE(glyphs.back().cluster <= 6);
+    // The embedded "abc" keeps left-to-right order (clusters 9,10,11).
+    bool foundAbc = false;
+    for (size_t i = 0; i + 2 < glyphs.size(); ++i)
+        if (glyphs[i].cluster == 9 && glyphs[i + 1].cluster == 10 &&
+            glyphs[i + 2].cluster == 11)
+            foundAbc = true;
+    REQUIRE(foundAbc);
+
+    // Digits in RTL text are numbers, not mirrored glyph soup: in
+    // "سلام 123" (base RTL) the digit run sits leftmost and keeps 1-2-3
+    // order. The direction-neutral splitter this replaced pulled digits
+    // into the Arabic run and reversed them.
+    REQUIRE(shaper.shape(id, 16.0f, "سلام 123", &glyphs));
+    REQUIRE(glyphs.size() == 7); // 1 2 3 space م لا س (lam-alef ligates)
+    REQUIRE(glyphs[0].cluster == 9);
+    REQUIRE(glyphs[1].cluster == 10);
+    REQUIRE(glyphs[2].cluster == 11);
+    REQUIRE(glyphs.back().cluster == 0);
+}

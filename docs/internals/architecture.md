@@ -63,10 +63,13 @@ per-frame-slot mapped SSBO and render as ONE
   instance — scissor never breaks the batch.
 - Text shapes through HarfBuzz (`src/text/shaper.*`, hb-ot font funcs — no
   FreeType coupling): ligatures, kerning and complex scripts (Arabic
-  joining etc.) per line, with lines split into direction runs (an RTL
-  run's glyphs come back in visual order; runs lay out in logical order —
-  full bidi reordering is a known non-goal for v1). Positioning uses
-  HarfBuzz advances exclusively, so measure and draw always agree.
+  joining etc.) per line, with full bidi (UAX#9): SheenBidi computes
+  embedding levels per line (base direction auto-detected, LTR default),
+  each level run shapes in its own direction, and rule L2 reorders the
+  runs so the glyph stream is in visual order (an RTL run's glyphs come
+  back visually ordered from HarfBuzz already; mirroring is HarfBuzz's
+  job on RTL buffers). Positioning uses HarfBuzz advances exclusively,
+  so measure and draw always agree.
 - Text quads sample R8 glyph-atlas pages (`src/text/glyph_cache.*`:
   FreeType raster → stb_rect_pack into 1024² pages, uploaded on change),
   cached per (font, size, **glyph id**) — the shaper's output, not

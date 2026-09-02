@@ -1,8 +1,8 @@
 #include "text/shaper.hpp"
 
 #include "rendy/core/log.hpp" // formatted err()
-#include "text/utf8.hpp"
 
+#include <SheenBidi/SheenBidi.h>
 #include <hb.h>
 
 #include <algorithm>
@@ -38,41 +38,64 @@ Result<uint32_t> Shaper::loadFont(const std::string& path) {
 
 namespace {
 
-/// Splits a line into maximal same-direction runs. Mixed lines (e.g. Latin
-/// with an embedded Arabic phrase) must shape per run: HarfBuzz needs one
+/// UAX#9 embedding levels for one line via SheenBidi (levels come back per
+/// UTF-8 byte), collapsed into maximal same-level runs in logical order.
+/// The base direction is auto-detected from the first strong character
+/// (LTR when there is none). HarfBuzz needs the split anyway: one
 /// direction per buffer, and an RTL run's glyphs come back visually
-/// ordered. Runs lay out in logical order — correct for the common
-/// LTR-base case; full bidi reordering is out of scope for v1.
-void splitDirectionRuns(std::string_view utf8, std::vector<Shaper::DirectionRun>* runs) {
+/// ordered within the run.
+void splitLevelRuns(std::string_view utf8, std::vector<Shaper::LevelRun>* runs) {
     runs->clear();
-    hb_unicode_funcs_t* unicode = hb_unicode_funcs_get_default();
-    Shaper::DirectionRun current;
-    bool haveStrong = false;
+    const SBCodepointSequence sequence{SBStringEncodingUTF8, utf8.data(), utf8.size()};
+    SBAlgorithmRef algorithm = SBAlgorithmCreate(&sequence);
+    if (algorithm == nullptr) { // OOM: degrade to one LTR run
+        runs->push_back({0, utf8.size(), 0});
+        return;
+    }
     size_t offset = 0;
     while (offset < utf8.size()) {
-        const size_t at = offset;
-        const uint32_t codepoint = decodeUtf8(utf8, offset);
-        // Spaces/punctuation/digits are COMMON script — direction-neutral
-        // (hb reports LTR for them, which would chop an RTL phrase into
-        // per-word runs and scramble the word order).
-        const hb_script_t script = hb_unicode_script(unicode, codepoint);
-        const bool neutral = script == HB_SCRIPT_COMMON || script == HB_SCRIPT_INHERITED ||
-                             script == HB_SCRIPT_UNKNOWN;
-        const hb_direction_t direction =
-            neutral ? HB_DIRECTION_INVALID : hb_script_get_horizontal_direction(script);
-        const bool strong = direction == HB_DIRECTION_LTR || direction == HB_DIRECTION_RTL;
-        const bool rtl = direction == HB_DIRECTION_RTL;
-        if (strong && haveStrong && rtl != current.rtl) {
-            current.end = at;
-            runs->push_back(current);
-            current = {at, at, rtl};
-        } else if (strong && !haveStrong) {
-            current.rtl = rtl; // leading neutrals join this run
-            haveStrong = true;
+        // One paragraph per call; a line rarely holds separators (shape()
+        // takes single lines) but U+2029 etc. would end one early.
+        SBParagraphRef paragraph = SBAlgorithmCreateParagraph(
+            algorithm, offset, utf8.size() - offset, SBLevelDefaultLTR);
+        if (paragraph == nullptr) break;
+        const SBUInteger length = SBParagraphGetLength(paragraph);
+        const SBLevel* levels = SBParagraphGetLevelsPtr(paragraph);
+        for (SBUInteger i = 0; i < length; ++i) {
+            const size_t at = offset + i;
+            if (!runs->empty() && runs->back().end == at && runs->back().level == levels[i])
+                runs->back().end = at + 1;
+            else
+                runs->push_back({at, at + 1, levels[i]});
+        }
+        SBParagraphRelease(paragraph);
+        if (length == 0) break;
+        offset += length;
+    }
+    SBAlgorithmRelease(algorithm);
+    if (runs->empty() && !utf8.empty()) runs->push_back({0, utf8.size(), 0});
+}
+
+/// UAX#9 rule L2: from the highest level down to the lowest odd level,
+/// reverse every maximal contiguous subsequence of runs at or above it.
+/// Afterwards the runs are in visual (left-to-right screen) order.
+void reorderVisual(std::vector<Shaper::LevelRun>* runs) {
+    uint8_t maxLevel = 0;
+    uint8_t minOdd = 255;
+    for (const Shaper::LevelRun& run : *runs) {
+        maxLevel = std::max(maxLevel, run.level);
+        if ((run.level & 1) != 0) minOdd = std::min(minOdd, run.level);
+    }
+    for (uint8_t level = maxLevel; level >= minOdd; --level) {
+        for (size_t i = 0; i < runs->size(); ++i) {
+            if ((*runs)[i].level < level) continue;
+            size_t j = i;
+            while (j + 1 < runs->size() && (*runs)[j + 1].level >= level) ++j;
+            std::reverse(runs->begin() + static_cast<ptrdiff_t>(i),
+                         runs->begin() + static_cast<ptrdiff_t>(j) + 1);
+            i = j;
         }
     }
-    current.end = utf8.size();
-    if (current.end > current.start) runs->push_back(current);
 }
 
 } // namespace
@@ -89,9 +112,11 @@ bool Shaper::shape(uint32_t fontId, float pixelSize, std::string_view utf8,
         static_cast<int>(std::lround(std::clamp(pixelSize, 1.0f, 512.0f) * 64.0f));
     hb_font_set_scale(font.font, scale, scale);
 
-    splitDirectionRuns(utf8, &runs_);
-    for (const DirectionRun& run : runs_) {
-        const hb_direction_t direction = run.rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR;
+    splitLevelRuns(utf8, &runs_);
+    reorderVisual(&runs_);
+    for (const LevelRun& run : runs_) {
+        const bool rtl = (run.level & 1) != 0;
+        const hb_direction_t direction = rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR;
         hb_buffer_clear_contents(buffer_);
         // Whole string + item range: the shaper sees the surrounding
         // context and clusters stay absolute byte offsets.
@@ -113,7 +138,7 @@ bool Shaper::shape(uint32_t fontId, float pixelSize, std::string_view utf8,
             glyph.xAdvance = static_cast<float>(positions[i].x_advance) / 64.0f;
             glyph.xOffset = static_cast<float>(positions[i].x_offset) / 64.0f;
             glyph.yOffset = static_cast<float>(positions[i].y_offset) / 64.0f;
-            glyph.rtl = run.rtl;
+            glyph.rtl = rtl;
             out->push_back(glyph);
         }
     }
