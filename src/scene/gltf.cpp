@@ -1,5 +1,7 @@
 // glTF 2.0 import via fastgltf: meshes, PBR materials, textures (with the
 // spec's sRGB/linear split), the node hierarchy, skins and animations.
+// Extensions: KHR_draco_mesh_compression (draco decoder) and
+// KHR_texture_basisu (KTX2 → BC7 via the basis transcoder).
 
 #include "app/app_impl.hpp"
 #include "rendy/scene/scene.hpp"
@@ -9,17 +11,31 @@
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
 
+#include <basisu_transcoder.h>
+#include <draco/compression/decode.h>
+
 #include <stb_image.h>
 
 #include <fmt/core.h>
 
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <filesystem>
+#include <mutex>
 #include <unordered_map>
 
 namespace rendy {
 namespace {
+
+constexpr uint8_t kKtx2Magic[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
+                                    0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+
+bool isKtx2(const uint8_t* bytes, size_t size) {
+    return size >= sizeof(kKtx2Magic) && std::memcmp(bytes, kKtx2Magic, sizeof(kKtx2Magic)) == 0;
+}
+
+std::once_flag basisInitFlag;
 
 struct GltfLoader {
     detail::SceneImpl& scene;
@@ -38,67 +54,111 @@ struct GltfLoader {
     // Primitive scene nodes awaiting a skin (sceneNodeIndex, gltfSkinIndex).
     std::vector<std::pair<uint32_t, size_t>> pendingSkins;
 
+    /// KTX2 (KHR_texture_basisu) → BC7 with the full mip chain transcoded.
+    TextureRef createFromKtx2(const uint8_t* bytes, size_t size, bool srgb) {
+        std::call_once(basisInitFlag, [] { basist::basisu_transcoder_init(); });
+        basist::ktx2_transcoder transcoder;
+        if (!transcoder.init(bytes, static_cast<uint32_t>(size)) ||
+            !transcoder.start_transcoding()) {
+            log::warn("gltf: failed to parse KTX2 texture");
+            return {};
+        }
+        std::vector<std::vector<uint8_t>> mipData;
+        for (uint32_t level = 0; level < transcoder.get_levels(); ++level) {
+            basist::ktx2_image_level_info info{};
+            if (!transcoder.get_image_level_info(info, level, 0, 0)) return {};
+            std::vector<uint8_t> data(static_cast<size_t>(info.m_total_blocks) * 16);
+            if (!transcoder.transcode_image_level(
+                    level, 0, 0, data.data(), info.m_total_blocks,
+                    basist::transcoder_texture_format::cTFBC7_RGBA)) {
+                log::warn("gltf: KTX2 transcode failed at mip {}", level);
+                return {};
+            }
+            mipData.push_back(std::move(data));
+        }
+        std::vector<gpu::TexturePool::CompressedMip> mips;
+        mips.reserve(mipData.size());
+        for (const auto& data : mipData) mips.push_back({data.data(), data.size()});
+        TextureOptions options;
+        options.srgb = srgb;
+        options.mipmaps = mips.size() > 1;
+        options.wrap = TextureOptions::Wrap::Repeat;
+        auto created = scene.app->textures->createCompressed(
+            mips,
+            {static_cast<int>(transcoder.get_width()), static_cast<int>(transcoder.get_height())},
+            srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK, options);
+        return created ? created.value() : TextureRef{};
+    }
+
+    TextureRef createFromBytes(const uint8_t* bytes, size_t size, bool srgb) {
+        if (isKtx2(bytes, size)) return createFromKtx2(bytes, size, srgb);
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        stbi_uc* pixels = stbi_load_from_memory(bytes, static_cast<int>(size), &width,
+                                                &height, &channels, STBI_rgb_alpha);
+        if (pixels == nullptr) return {};
+        TextureOptions options;
+        options.srgb = srgb;
+        options.mipmaps = true;
+        options.wrap = TextureOptions::Wrap::Repeat;
+        auto created = scene.app->textures->createFromPixels(pixels, {width, height}, options);
+        stbi_image_free(pixels);
+        return created ? created.value() : TextureRef{};
+    }
+
     TextureRef loadImage(size_t imageIndex, bool srgb) {
         auto& cache = srgb ? srgbImages : linearImages;
         if (auto it = cache.find(imageIndex); it != cache.end()) return it->second;
 
         const fastgltf::Image& image = asset.images[imageIndex];
-        int width = 0;
-        int height = 0;
-        int channels = 0;
-        stbi_uc* pixels = nullptr;
-
+        TextureRef ref{};
         std::visit(
             fastgltf::visitor{
                 [&](const fastgltf::sources::Array& bytes) {
-                    pixels = stbi_load_from_memory(
-                        reinterpret_cast<const stbi_uc*>(bytes.bytes.data()),
-                        static_cast<int>(bytes.bytes.size()), &width, &height, &channels,
-                        STBI_rgb_alpha);
+                    ref = createFromBytes(
+                        reinterpret_cast<const uint8_t*>(bytes.bytes.data()),
+                        bytes.bytes.size(), srgb);
                 },
                 [&](const fastgltf::sources::BufferView& view) {
                     const auto& bufferView = asset.bufferViews[view.bufferViewIndex];
                     const auto& buffer = asset.buffers[bufferView.bufferIndex];
                     if (const auto* array =
                             std::get_if<fastgltf::sources::Array>(&buffer.data)) {
-                        pixels = stbi_load_from_memory(
-                            reinterpret_cast<const stbi_uc*>(array->bytes.data() +
-                                                             bufferView.byteOffset),
-                            static_cast<int>(bufferView.byteLength), &width, &height,
-                            &channels, STBI_rgb_alpha);
+                        ref = createFromBytes(
+                            reinterpret_cast<const uint8_t*>(array->bytes.data()) +
+                                bufferView.byteOffset,
+                            bufferView.byteLength, srgb);
                     }
                 },
                 [&](const fastgltf::sources::URI& uri) {
                     const auto path = directory / std::filesystem::path(uri.uri.fspath());
-                    pixels = stbi_load(path.string().c_str(), &width, &height, &channels,
-                                       STBI_rgb_alpha);
+                    std::ifstream file(path, std::ios::binary);
+                    std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(file),
+                                               std::istreambuf_iterator<char>()};
+                    if (!bytes.empty()) ref = createFromBytes(bytes.data(), bytes.size(), srgb);
                 },
                 [](const auto&) {},
             },
             image.data);
 
-        TextureRef ref{};
-        if (pixels != nullptr) {
-            TextureOptions options;
-            options.srgb = srgb;
-            options.mipmaps = true;
-            options.wrap = TextureOptions::Wrap::Repeat;
-            auto created =
-                scene.app->textures->createFromPixels(pixels, {width, height}, options);
-            if (created) ref = created.value();
-            stbi_image_free(pixels);
-        } else {
-            log::warn("gltf: failed to decode image #{}", imageIndex);
-        }
+        if (ref.index == 0) log::warn("gltf: failed to decode image #{}", imageIndex);
         cache.emplace(imageIndex, ref);
         return ref;
     }
 
+    /// The image behind a texture — prefers the KHR_texture_basisu source.
+    std::optional<size_t> imageOf(const fastgltf::Texture& texture) const {
+        if (texture.basisuImageIndex.has_value()) return *texture.basisuImageIndex;
+        if (texture.imageIndex.has_value()) return *texture.imageIndex;
+        return std::nullopt;
+    }
+
     TextureRef textureFor(const fastgltf::Optional<fastgltf::TextureInfo>& info, bool srgb) {
         if (!info.has_value()) return {};
-        const auto& texture = asset.textures[info->textureIndex];
-        if (!texture.imageIndex.has_value()) return {};
-        return loadImage(*texture.imageIndex, srgb);
+        const auto image = imageOf(asset.textures[info->textureIndex]);
+        if (!image.has_value()) return {};
+        return loadImage(*image, srgb);
     }
 
     void loadMaterials() {
@@ -129,15 +189,15 @@ struct GltfLoader {
             gpuMaterial.maps.x = textureFor(pbr.baseColorTexture, true).index;
             gpuMaterial.maps.y = textureFor(pbr.metallicRoughnessTexture, false).index;
             if (material.normalTexture.has_value()) {
-                const auto& texture = asset.textures[material.normalTexture->textureIndex];
-                if (texture.imageIndex.has_value())
-                    gpuMaterial.maps.z = loadImage(*texture.imageIndex, false).index;
+                const auto image =
+                    imageOf(asset.textures[material.normalTexture->textureIndex]);
+                if (image.has_value()) gpuMaterial.maps.z = loadImage(*image, false).index;
             }
             gpuMaterial.maps.w = textureFor(material.emissiveTexture, true).index;
             if (material.occlusionTexture.has_value()) {
-                const auto& texture = asset.textures[material.occlusionTexture->textureIndex];
-                if (texture.imageIndex.has_value())
-                    gpuMaterial.maps2.x = loadImage(*texture.imageIndex, false).index;
+                const auto image =
+                    imageOf(asset.textures[material.occlusionTexture->textureIndex]);
+                if (image.has_value()) gpuMaterial.maps2.x = loadImage(*image, false).index;
             }
 
             scene.materials.push_back(gpuMaterial);
@@ -174,70 +234,173 @@ struct GltfLoader {
         }
     }
 
+    /// KHR_draco_mesh_compression: vertices/indices come from the draco
+    /// blob, not the accessors (draco may reorder vertices).
+    bool loadDracoPrimitive(const fastgltf::Primitive& primitive, MeshData& mesh,
+                            bool& hasNormals, bool& hasTangents) {
+        const auto& dracoExt = *primitive.dracoCompression;
+        if (dracoExt.bufferView >= asset.bufferViews.size()) return false;
+        const auto& bufferView = asset.bufferViews[dracoExt.bufferView];
+        const auto* array =
+            std::get_if<fastgltf::sources::Array>(&asset.buffers[bufferView.bufferIndex].data);
+        if (array == nullptr) return false;
+
+        draco::DecoderBuffer decoderBuffer;
+        decoderBuffer.Init(
+            reinterpret_cast<const char*>(array->bytes.data()) + bufferView.byteOffset,
+            bufferView.byteLength);
+        draco::Decoder decoder;
+        auto decoded = decoder.DecodeMeshFromBuffer(&decoderBuffer);
+        if (!decoded.ok()) {
+            log::warn("gltf: draco decode failed: {}", decoded.status().error_msg());
+            return false;
+        }
+        const draco::Mesh& dracoMesh = *decoded.value();
+
+        const uint32_t vertexCount = dracoMesh.num_points();
+        mesh.vertices.resize(vertexCount);
+        mesh.indices.reserve(static_cast<size_t>(dracoMesh.num_faces()) * 3);
+        for (draco::FaceIndex face(0); face < dracoMesh.num_faces(); ++face)
+            for (int corner = 0; corner < 3; ++corner)
+                mesh.indices.push_back(dracoMesh.face(face)[corner].value());
+
+        // The extension maps attribute names to draco unique ids.
+        auto attribute = [&](std::string_view name) -> const draco::PointAttribute* {
+            const auto it = dracoExt.findAttribute(name);
+            if (it == dracoExt.attributes.cend()) return nullptr;
+            return dracoMesh.GetAttributeByUniqueId(static_cast<uint32_t>(it->accessorIndex));
+        };
+        auto readFloats = [&](const draco::PointAttribute* attr, int components, auto&& sink) {
+            float value[4] = {0, 0, 0, 0};
+            for (uint32_t i = 0; i < vertexCount; ++i) {
+                attr->ConvertValue<float>(attr->mapped_index(draco::PointIndex(i)),
+                                          static_cast<int8_t>(components), value);
+                sink(i, value);
+            }
+        };
+
+        const draco::PointAttribute* positions = attribute("POSITION");
+        if (positions == nullptr) return false;
+        readFloats(positions, 3, [&](uint32_t i, const float* v) {
+            mesh.vertices[i].position = {v[0], v[1], v[2]};
+        });
+        if (const auto* attr = attribute("NORMAL")) {
+            hasNormals = true;
+            readFloats(attr, 3, [&](uint32_t i, const float* v) {
+                mesh.vertices[i].normal = {v[0], v[1], v[2]};
+            });
+        }
+        if (const auto* attr = attribute("TEXCOORD_0")) {
+            readFloats(attr, 2,
+                       [&](uint32_t i, const float* v) { mesh.vertices[i].uv = {v[0], v[1]}; });
+        }
+        if (const auto* attr = attribute("TANGENT")) {
+            hasTangents = true;
+            readFloats(attr, 4, [&](uint32_t i, const float* v) {
+                mesh.vertices[i].tangent = {v[0], v[1], v[2], v[3]};
+            });
+        }
+        if (const auto* attr = attribute("JOINTS_0")) {
+            uint32_t joints[4] = {0, 0, 0, 0};
+            for (uint32_t i = 0; i < vertexCount; ++i) {
+                attr->ConvertValue<uint32_t>(attr->mapped_index(draco::PointIndex(i)), 4,
+                                             joints);
+                mesh.vertices[i].joints = {static_cast<uint16_t>(joints[0]),
+                                           static_cast<uint16_t>(joints[1]),
+                                           static_cast<uint16_t>(joints[2]),
+                                           static_cast<uint16_t>(joints[3])};
+            }
+        }
+        if (const auto* attr = attribute("WEIGHTS_0")) {
+            readFloats(attr, 4, [&](uint32_t i, const float* v) {
+                const Vec4 value{v[0], v[1], v[2], v[3]};
+                const float sum = value.x + value.y + value.z + value.w;
+                mesh.vertices[i].weights = sum > 0.0f ? value / sum : value;
+            });
+        }
+        return true;
+    }
+
     void loadMeshes() {
         meshPrimitives.resize(asset.meshes.size());
         for (size_t meshIndex = 0; meshIndex < asset.meshes.size(); ++meshIndex) {
             for (const fastgltf::Primitive& primitive : asset.meshes[meshIndex].primitives) {
                 if (primitive.type != fastgltf::PrimitiveType::Triangles) continue;
-                const auto* positionAttr = primitive.findAttribute("POSITION");
-                if (positionAttr == primitive.attributes.end()) continue;
 
                 MeshData mesh;
-                const auto& positions = asset.accessors[positionAttr->accessorIndex];
-                mesh.vertices.resize(positions.count);
-                fastgltf::iterateAccessorWithIndex<Vec3>(
-                    asset, positions,
-                    [&](Vec3 value, size_t i) { mesh.vertices[i].position = value; });
-
                 bool hasNormals = false;
-                if (const auto* attr = primitive.findAttribute("NORMAL");
-                    attr != primitive.attributes.end()) {
-                    hasNormals = true;
-                    fastgltf::iterateAccessorWithIndex<Vec3>(
-                        asset, asset.accessors[attr->accessorIndex],
-                        [&](Vec3 value, size_t i) { mesh.vertices[i].normal = value; });
-                }
-                if (const auto* attr = primitive.findAttribute("TEXCOORD_0");
-                    attr != primitive.attributes.end()) {
-                    fastgltf::iterateAccessorWithIndex<Vec2>(
-                        asset, asset.accessors[attr->accessorIndex],
-                        [&](Vec2 value, size_t i) { mesh.vertices[i].uv = value; });
-                }
-                if (const auto* attr = primitive.findAttribute("JOINTS_0");
-                    attr != primitive.attributes.end()) {
-                    fastgltf::iterateAccessorWithIndex<glm::u16vec4>(
-                        asset, asset.accessors[attr->accessorIndex],
-                        [&](glm::u16vec4 value, size_t i) { mesh.vertices[i].joints = value; });
-                }
-                if (const auto* attr = primitive.findAttribute("WEIGHTS_0");
-                    attr != primitive.attributes.end()) {
-                    fastgltf::iterateAccessorWithIndex<Vec4>(
-                        asset, asset.accessors[attr->accessorIndex], [&](Vec4 value, size_t i) {
-                            const float sum = value.x + value.y + value.z + value.w;
-                            mesh.vertices[i].weights = sum > 0.0f ? value / sum : value;
-                        });
-                }
-
                 bool hasTangents = false;
-                if (const auto* attr = primitive.findAttribute("TANGENT");
-                    attr != primitive.attributes.end()) {
-                    hasTangents = true;
-                    fastgltf::iterateAccessorWithIndex<Vec4>(
-                        asset, asset.accessors[attr->accessorIndex],
-                        [&](Vec4 value, size_t i) { mesh.vertices[i].tangent = value; });
+                if (primitive.dracoCompression != nullptr) {
+                    if (!loadDracoPrimitive(primitive, mesh, hasNormals, hasTangents))
+                        continue;
+                    if (!primitive.targets.empty()) {
+                        // Draco reorders vertices; target accessors keep the
+                        // original order, so the deltas would land on the
+                        // wrong vertices.
+                        log::warn("gltf: morph targets on a draco-compressed primitive are "
+                                  "not supported — skipping the targets");
+                    }
+                } else {
+                    const auto* positionAttr = primitive.findAttribute("POSITION");
+                    if (positionAttr == primitive.attributes.end()) continue;
+                    const auto& positions = asset.accessors[positionAttr->accessorIndex];
+                    mesh.vertices.resize(positions.count);
+                    fastgltf::iterateAccessorWithIndex<Vec3>(
+                        asset, positions,
+                        [&](Vec3 value, size_t i) { mesh.vertices[i].position = value; });
+
+                    if (const auto* attr = primitive.findAttribute("NORMAL");
+                        attr != primitive.attributes.end()) {
+                        hasNormals = true;
+                        fastgltf::iterateAccessorWithIndex<Vec3>(
+                            asset, asset.accessors[attr->accessorIndex],
+                            [&](Vec3 value, size_t i) { mesh.vertices[i].normal = value; });
+                    }
+                    if (const auto* attr = primitive.findAttribute("TEXCOORD_0");
+                        attr != primitive.attributes.end()) {
+                        fastgltf::iterateAccessorWithIndex<Vec2>(
+                            asset, asset.accessors[attr->accessorIndex],
+                            [&](Vec2 value, size_t i) { mesh.vertices[i].uv = value; });
+                    }
+                    if (const auto* attr = primitive.findAttribute("JOINTS_0");
+                        attr != primitive.attributes.end()) {
+                        fastgltf::iterateAccessorWithIndex<glm::u16vec4>(
+                            asset, asset.accessors[attr->accessorIndex],
+                            [&](glm::u16vec4 value, size_t i) {
+                                mesh.vertices[i].joints = value;
+                            });
+                    }
+                    if (const auto* attr = primitive.findAttribute("WEIGHTS_0");
+                        attr != primitive.attributes.end()) {
+                        fastgltf::iterateAccessorWithIndex<Vec4>(
+                            asset, asset.accessors[attr->accessorIndex],
+                            [&](Vec4 value, size_t i) {
+                                const float sum = value.x + value.y + value.z + value.w;
+                                mesh.vertices[i].weights = sum > 0.0f ? value / sum : value;
+                            });
+                    }
+                    if (const auto* attr = primitive.findAttribute("TANGENT");
+                        attr != primitive.attributes.end()) {
+                        hasTangents = true;
+                        fastgltf::iterateAccessorWithIndex<Vec4>(
+                            asset, asset.accessors[attr->accessorIndex],
+                            [&](Vec4 value, size_t i) { mesh.vertices[i].tangent = value; });
+                    }
+
+                    if (primitive.indicesAccessor.has_value()) {
+                        const auto& indices = asset.accessors[*primitive.indicesAccessor];
+                        mesh.indices.resize(indices.count);
+                        fastgltf::iterateAccessorWithIndex<uint32_t>(
+                            asset, indices,
+                            [&](uint32_t value, size_t i) { mesh.indices[i] = value; });
+                    }
                 }
 
-                if (primitive.indicesAccessor.has_value()) {
-                    const auto& indices = asset.accessors[*primitive.indicesAccessor];
-                    mesh.indices.resize(indices.count);
-                    fastgltf::iterateAccessorWithIndex<uint32_t>(
-                        asset, indices,
-                        [&](uint32_t value, size_t i) { mesh.indices[i] = value; });
-                }
-
-                // Morph targets (POSITION/NORMAL deltas).
-                for (size_t targetIndex = 0; targetIndex < primitive.targets.size();
-                     ++targetIndex) {
+                // Morph targets (POSITION/NORMAL deltas). Not for draco
+                // primitives — see the warning above.
+                const size_t targetCount =
+                    primitive.dracoCompression == nullptr ? primitive.targets.size() : 0;
+                for (size_t targetIndex = 0; targetIndex < targetCount; ++targetIndex) {
                     MorphTarget target;
                     if (auto attr = primitive.findTargetAttribute(targetIndex, "POSITION");
                         attr != primitive.targets[targetIndex].end()) {
@@ -340,7 +503,10 @@ Result<NodeId> Scene::loadGltf(const std::string& path) {
         return err("gltf: cannot open '{}': {}", path, fastgltf::getErrorMessage(data.error()));
 
     const auto directory = std::filesystem::path(path).parent_path();
-    fastgltf::Parser parser;
+    fastgltf::Parser parser(fastgltf::Extensions::KHR_draco_mesh_compression |
+                            fastgltf::Extensions::KHR_texture_basisu |
+                            fastgltf::Extensions::KHR_mesh_quantization |
+                            fastgltf::Extensions::KHR_materials_emissive_strength);
     auto asset = parser.loadGltf(data.get(), directory,
                                  fastgltf::Options::LoadExternalBuffers |
                                      fastgltf::Options::LoadExternalImages |

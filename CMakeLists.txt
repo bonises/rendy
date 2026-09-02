@@ -91,6 +91,8 @@ target_link_libraries(rendy
     freetype
     yogacore
     fastgltf::fastgltf
+    draco::draco
+    basisu::transcoder
     dr_libs::dr_libs)
 
 target_compile_features(rendy PUBLIC cxx_std_20)

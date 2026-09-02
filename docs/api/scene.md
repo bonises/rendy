@@ -26,7 +26,7 @@ see the [3D guide](../guides/3d.md) for concepts.
 | `addReflectionProbe` | `ReflectionProbe addReflectionProbe(const ReflectionProbeDesc&)` | local parallax-corrected reflections (max 8) |
 | `removeReflectionProbe` | `void removeReflectionProbe(ReflectionProbe)` | |
 | `bakeReflectionProbes` | `void bakeReflectionProbes()` | blocking capture + GGX prefilter of every probe |
-| `loadGltf` | `Result<NodeId> loadGltf(path)` | .gltf/.glb → root node (incl. skins + animations) |
+| `loadGltf` | `Result<NodeId> loadGltf(path)` | .gltf/.glb → root node (incl. skins + animations; Draco + KTX2/BasisU supported) |
 | `animationNames` | `std::vector<std::string> animationNames() const` | loaded clips |
 | `findAnimation` | `AnimationHandle findAnimation(std::string_view) const` | |
 | `playAnimation` | `void playAnimation(handle\|name, bool loop = true, float speed = 1)` | |

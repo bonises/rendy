@@ -11,6 +11,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace rendy::gpu {
 
@@ -27,6 +28,15 @@ public:
                                         const TextureOptions& options);
     /// Single-channel (R8) pixels — used by the glyph atlas.
     Result<TextureRef> createR8(const void* pixels, IVec2 size);
+
+    /// Pre-compressed texture (e.g. BC7 from a KTX2 transcode) with a ready
+    /// mip chain: mips[0] is the full size, each following mip halves it.
+    struct CompressedMip {
+        const void* data = nullptr;
+        size_t bytes = 0;
+    };
+    Result<TextureRef> createCompressed(const std::vector<CompressedMip>& mips, IVec2 size,
+                                        VkFormat format, const TextureOptions& options);
     Result<TextureRef> loadFromFile(const std::string& path, const TextureOptions& options);
 
     /// Re-upload pixels into an existing texture (must match size/format).
