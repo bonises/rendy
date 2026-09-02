@@ -55,7 +55,10 @@ per-frame-slot mapped SSBO and render as ONE
 - Vertex shader expands `gl_VertexIndex`/`gl_InstanceIndex` — no vertex
   buffer at all.
 - Rounded corners, borders and edge AA come from an analytic rounded-box
-  SDF; radius clamps to half-size (CSS pill behavior).
+  SDF; radius clamps to half-size (CSS pill behavior). Drop shadows are
+  `KIND_SHADOW` quads pre-expanded by the blur radius: the shader runs the
+  SDF against the original box with a squared-smoothstep falloff — same
+  instanced batch, no extra draw calls.
 - Clipping is shader-side: a per-frame SSBO of clip rects, an index per
   instance — scissor never breaks the batch.
 - Text quads sample R8 glyph-atlas pages (`src/text/glyph_cache.*`:
@@ -129,6 +132,23 @@ mtime change (debug builds).
   8–11 (1×1 black defaults otherwise). The skybox draws as a fullscreen
   triangle at far depth inside the HDR pass; `mesh.frag` swaps flat ambient
   for irradiance + prefiltered-specular when `counts.z` is set.
+- **Reflection probes** (`Renderer3D::bakeProbes`): up to 8 local probes in
+  one cube array (128², 5 GGX-prefiltered mips, binding 16). Baking blocks:
+  the scene renders 6 faces per probe through a single-sampled mesh
+  pipeline variant with a CLOCKWISE front face (probe faces use the
+  point-shadow matrix convention without the main pass's y-flip, which
+  mirrors framebuffer winding), then the EnvBaker prefilters into the
+  probe's layers. Probe boxes/positions live in the frame UBO;
+  `mesh.frag` picks the strongest edge-fade probe, parallax-corrects the
+  reflection ray against the box, and blends over the global specular.
+  The BRDF LUT is baked for real at renderer startup so probes work
+  without an HDRI.
+- **glTF extensions**: KHR_draco_mesh_compression decodes through google
+  draco into the normal MeshData path (draco reorders vertices — morph
+  targets on draco primitives are skipped); KHR_texture_basisu transcodes
+  KTX2 (ETC1S/UASTC, zstd supercompression) to BC7 with the basis
+  transcoder and uploads pre-built mip chains via
+  `TexturePool::createCompressed`.
 - **Post**: HDR RGBA16F 4×MSAA → resolve (registered bindlessly) → tonemap
   fullscreen triangle (Khronos PBR Neutral / ACES / off + exposure) into the
   swapchain.
@@ -157,6 +177,14 @@ audio callback. Sounds are fully decoded/resampled at load (dr_wav,
 stb_vorbis). Per-voice parameters are relaxed atomics; voice claim/free
 (`play`, `unload`) briefly takes SDL's stream lock to exclude the callback.
 `generation` counters make stale VoiceRefs harmless.
+
+Streamed sounds (`openStream`, ogg only) skip the full decode: a feeder
+thread wakes every ~30 ms and tops up a lock-free SPSC ring (32768 frames ≈
+0.68 s) per stream — decoding, resampling (fractional cursor over a small
+pending window) and channel mixing off the audio thread. The callback only
+consumes ring frames; decode-level looping and play()-requested rewinds
+happen in the feeder (ring resets under the SDL stream lock). One playing
+voice per stream.
 
 ## Conventions worth keeping
 
