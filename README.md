@@ -57,6 +57,11 @@ cmake --build --preset release
 ./build/release/examples/01_hello/01_hello
 ```
 
+Run the test suite (CPU-only, no GPU needed) with `ctest --preset release`.
+CI builds every push with GCC and Clang across the `debug`, `release` and
+`asan` presets with warnings-as-errors
+([workflow](.github/workflows/ci.yml)).
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)

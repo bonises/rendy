@@ -19,6 +19,10 @@ Presets: `debug` (validation layers on), `release`, `asan`. Options:
 preset: edit `shaders/*` while an app runs and pipelines rebuild live),
 `RENDY_SANITIZE`.
 
+CI (`.github/workflows/ci.yml`) builds GCC + Clang × debug/release plus a
+GCC asan job, all with `RENDY_WERROR=ON` — keep the tree warning-clean
+under both compilers. Tests are CPU-only; CI has no GPU.
+
 ## Where things live
 
 | Area | Public API | Implementation | Tests |
