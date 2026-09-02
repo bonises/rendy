@@ -17,9 +17,13 @@ mixer.play(blip, {.pan = -0.4f});          // fire and forget
 ## Sounds
 
 - `load(path)` decodes **WAV** (dr_wav) and **OGG Vorbis** (stb_vorbis)
-  fully at load time, resampling to 48 kHz stereo. Fine for effects and
-  music of ordinary length; streaming for very long files is a later
-  feature.
+  fully at load time, resampling to 48 kHz stereo. Right for effects and
+  short jingles.
+- `openStream(path)` opens an **OGG** for streamed playback: a background
+  thread decodes on the fly with ~0.7 s buffered, so an hour of music costs
+  kilobytes instead of hundreds of MB. One playing voice per stream —
+  `play()` again restarts it (with `.loop` the track repeats seamlessly).
+  Try it: `07_audio path/to/music.ogg --stream`.
 - `createSound(frames, frameCount, channels, sampleRate)` takes raw
   interleaved float PCM — procedural audio, synthesis, or your own decoder.
   (`06_breakout` and `07_audio` synthesize all their sounds this way.)

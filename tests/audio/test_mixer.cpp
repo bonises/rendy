@@ -27,6 +27,16 @@ TEST_CASE("createSound validates its inputs", "[audio]") {
     REQUIRE(sound.value().valid());
 }
 
+TEST_CASE("openStream rejects what it cannot stream", "[audio]") {
+    audio::Mixer mixer;
+    // Only ogg can stream.
+    REQUIRE_FALSE(mixer.openStream("music.wav").hasValue());
+    // Missing/invalid files fail cleanly.
+    REQUIRE_FALSE(mixer.openStream("/nonexistent/nope.ogg").hasValue());
+    // A destroyed mixer with a started feeder thread shuts down cleanly
+    // (exercised by the destructor at scope end even on failure paths).
+}
+
 TEST_CASE("stale and invalid refs are inert", "[audio]") {
     audio::Mixer mixer;
     // Unknown sound: play returns an invalid voice.

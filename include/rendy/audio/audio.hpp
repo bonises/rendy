@@ -51,6 +51,10 @@ public:
 
     /// Load a .wav or .ogg file, decoded and resampled at load time.
     Result<SoundRef> load(const std::string& path);
+    /// Open an .ogg for streamed playback: decoded on the fly by a
+    /// background thread (~0.7 s buffered) instead of fully into memory —
+    /// use for music. One playing voice at a time; play() restarts it.
+    Result<SoundRef> openStream(const std::string& path);
     /// Create a sound from raw PCM (interleaved float, any channel count 1/2).
     Result<SoundRef> createSound(const float* frames, size_t frameCount, int channels,
                                  int sampleRate);

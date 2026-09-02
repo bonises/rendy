@@ -11,8 +11,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace rendy::audio {
@@ -50,8 +52,36 @@ std::vector<float> normalizePcm(const float* input, size_t frameCount, int chann
 
 namespace detail {
 
+// A background-decoded ogg: the feeder thread keeps the SPSC ring topped
+// up (writer: feeder, reader: audio callback).
+struct Stream {
+    stb_vorbis* vorbis = nullptr;
+    int srcRate = 0;
+    int srcChannels = 0;
+    std::atomic<bool> loop{false};
+    std::atomic<bool> ended{false};   ///< decode hit EOF and loop is off
+    std::atomic<bool> restart{false}; ///< play() wants a rewind
+
+    static constexpr size_t kRingFrames = 32768; // power of two, ~0.68 s
+    std::vector<float> ring = std::vector<float>(kRingFrames * kChannels);
+    // Monotonic frame counters; masked into the ring on access.
+    std::atomic<size_t> writePos{0};
+    std::atomic<size_t> readPos{0};
+
+    // Feeder-only resample state: stereo frames at srcRate + fractional
+    // read cursor into them.
+    std::vector<float> pending;
+    double cursor = 0.0;
+    std::vector<float> decodeBuf;
+
+    ~Stream() {
+        if (vorbis != nullptr) stb_vorbis_close(vorbis);
+    }
+};
+
 struct Sound {
     std::vector<float> frames; // interleaved stereo 48 kHz
+    std::unique_ptr<Stream> stream; // set instead of frames for openStream
     [[nodiscard]] size_t frameCount() const { return frames.size() / kChannels; }
 };
 
@@ -79,6 +109,109 @@ struct MixerImpl {
 
     Voice voices[kVoiceCount];
     std::atomic<float> masterVolume{1.0f};
+
+    // Feeder thread for streamed sounds (started on first openStream).
+    std::thread feeder;
+    std::mutex feederMutex;
+    std::condition_variable feederWake;
+    bool feederQuit = false;
+    bool feederRunning = false;
+
+    void startFeeder() {
+        if (feederRunning) return;
+        feederRunning = true;
+        feeder = std::thread([this] { feederLoop(); });
+    }
+
+    void feederLoop() {
+        std::unique_lock lock(feederMutex);
+        while (!feederQuit) {
+            feederWake.wait_for(lock, std::chrono::milliseconds(30));
+            if (feederQuit) break;
+            lock.unlock();
+            {
+                std::lock_guard soundsLock(soundsMutex);
+                for (auto& sound : sounds)
+                    if (sound != nullptr && sound->stream != nullptr)
+                        fillStream(*sound->stream);
+            }
+            lock.lock();
+        }
+    }
+
+    /// Decode + resample until the ring is comfortably full. Feeder only.
+    void fillStream(Stream& st) {
+        if (st.restart.exchange(false)) {
+            stb_vorbis_seek_start(st.vorbis);
+            st.pending.clear();
+            st.cursor = 0.0;
+            st.ended.store(false, std::memory_order_relaxed);
+            // Empty the ring without racing the callback.
+            StreamLock streamLock(stream);
+            st.readPos.store(0, std::memory_order_relaxed);
+            st.writePos.store(0, std::memory_order_relaxed);
+        }
+        if (st.ended.load(std::memory_order_relaxed)) return;
+
+        const double step = static_cast<double>(st.srcRate) / kSampleRate;
+        while (true) {
+            const size_t used = st.writePos.load(std::memory_order_relaxed) -
+                                st.readPos.load(std::memory_order_acquire);
+            if (used + 1024 > Stream::kRingFrames) return; // comfortably full
+
+            // Ensure source material for at least one output frame.
+            while (st.pending.size() / kChannels < st.cursor + 2.0) {
+                constexpr int kDecodeFrames = 2048;
+                st.decodeBuf.resize(static_cast<size_t>(kDecodeFrames) *
+                                    static_cast<size_t>(st.srcChannels));
+                const int got = stb_vorbis_get_samples_float_interleaved(
+                    st.vorbis, st.srcChannels, st.decodeBuf.data(), kDecodeFrames * st.srcChannels);
+                if (got <= 0) {
+                    if (st.loop.load(std::memory_order_relaxed)) {
+                        stb_vorbis_seek_start(st.vorbis);
+                        continue;
+                    }
+                    st.ended.store(true, std::memory_order_release);
+                    return;
+                }
+                // Down/up-mix to stereo and append.
+                const size_t base = st.pending.size();
+                st.pending.resize(base + static_cast<size_t>(got) * kChannels);
+                for (int i = 0; i < got; ++i) {
+                    for (int c = 0; c < kChannels; ++c) {
+                        const int srcC = st.srcChannels == 1 ? 0 : std::min(c, st.srcChannels - 1);
+                        st.pending[base + static_cast<size_t>(i) * kChannels +
+                                   static_cast<size_t>(c)] =
+                            st.decodeBuf[static_cast<size_t>(i) *
+                                             static_cast<size_t>(st.srcChannels) +
+                                         static_cast<size_t>(srcC)];
+                    }
+                }
+            }
+
+            // Resample one output frame into the ring.
+            const auto i0 = static_cast<size_t>(st.cursor);
+            const float t = static_cast<float>(st.cursor - static_cast<double>(i0));
+            const size_t write = st.writePos.load(std::memory_order_relaxed);
+            const size_t slot = (write & (Stream::kRingFrames - 1)) * kChannels;
+            for (int c = 0; c < kChannels; ++c) {
+                const float a = st.pending[i0 * kChannels + static_cast<size_t>(c)];
+                const float b = st.pending[(i0 + 1) * kChannels + static_cast<size_t>(c)];
+                st.ring[slot + static_cast<size_t>(c)] = a + (b - a) * t;
+            }
+            st.writePos.store(write + 1, std::memory_order_release);
+            st.cursor += step;
+
+            // Trim consumed whole source frames off the front now and then.
+            if (st.cursor > 4096.0) {
+                const auto whole = static_cast<size_t>(st.cursor) - 1;
+                st.pending.erase(st.pending.begin(),
+                                 st.pending.begin() +
+                                     static_cast<long>(whole * kChannels));
+                st.cursor -= static_cast<double>(whole);
+            }
+        }
+    }
     // Fixed mix buffer: the callback mixes in chunks of at most
     // kMaxChunkFrames so it NEVER allocates, whatever SDL requests.
     static constexpr int kMaxChunkFrames = 4096;
@@ -116,7 +249,8 @@ struct MixerImpl {
             if (!voice.active.load(std::memory_order_acquire)) continue;
             if (voice.paused.load(std::memory_order_relaxed)) continue;
             const Sound* sound = voice.sound;
-            if (sound == nullptr || sound->frameCount() == 0) {
+            if (sound == nullptr ||
+                (sound->stream == nullptr && sound->frameCount() == 0)) {
                 voice.active.store(false, std::memory_order_release);
                 continue;
             }
@@ -128,6 +262,27 @@ struct MixerImpl {
             const float leftGain = volume * std::cos(angle);
             const float rightGain = volume * std::sin(angle);
             const bool loop = voice.loop.load(std::memory_order_relaxed);
+
+            if (sound->stream != nullptr) {
+                // Streamed: consume the feeder's ring; underruns play
+                // silence but keep the voice alive until the decode ends.
+                Stream& st = *sound->stream;
+                size_t read = st.readPos.load(std::memory_order_relaxed);
+                const size_t write = st.writePos.load(std::memory_order_acquire);
+                const size_t available = write - read;
+                const size_t count = std::min(frames, available);
+                for (size_t i = 0; i < count; ++i) {
+                    const size_t slot = (read & (Stream::kRingFrames - 1)) * kChannels;
+                    out[i * kChannels] += st.ring[slot] * leftGain;
+                    out[i * kChannels + 1] += st.ring[slot + 1] * rightGain;
+                    ++read;
+                }
+                st.readPos.store(read, std::memory_order_release);
+                if (available == 0 && st.ended.load(std::memory_order_acquire))
+                    voice.active.store(false, std::memory_order_release);
+                (void)loop; // decode-level looping is handled by the feeder
+                continue;
+            }
 
             const size_t total = sound->frameCount();
             size_t position = voice.position;
@@ -151,6 +306,7 @@ struct MixerImpl {
 
 using detail::MixerImpl;
 using detail::Sound;
+using detail::Stream;
 using detail::Voice;
 
 Mixer::Mixer() : impl_(std::make_unique<MixerImpl>()) {
@@ -176,6 +332,14 @@ Mixer::Mixer(Mixer&&) noexcept = default;
 Mixer& Mixer::operator=(Mixer&&) noexcept = default;
 
 Mixer::~Mixer() {
+    if (impl_ && impl_->feederRunning) {
+        {
+            std::lock_guard lock(impl_->feederMutex);
+            impl_->feederQuit = true;
+        }
+        impl_->feederWake.notify_all();
+        impl_->feeder.join();
+    }
     if (impl_ && impl_->stream != nullptr) SDL_DestroyAudioStream(impl_->stream);
     if (impl_ && impl_->ownsAudioInit) SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
@@ -236,6 +400,36 @@ Result<SoundRef> Mixer::load(const std::string& path) {
     return err("audio: unsupported format '{}' (wav/ogg supported)", path);
 }
 
+Result<SoundRef> Mixer::openStream(const std::string& path) {
+    const auto dot = path.rfind('.');
+    const std::string ext = dot == std::string::npos ? "" : path.substr(dot + 1);
+    if (ext != "ogg" && ext != "OGG")
+        return err("audio: only .ogg can be streamed ('{}')", path);
+
+    int error = 0;
+    stb_vorbis* vorbis = stb_vorbis_open_filename(path.c_str(), &error, nullptr);
+    if (vorbis == nullptr)
+        return err("audio: failed to open ogg stream '{}' (error {})", path, error);
+    const stb_vorbis_info info = stb_vorbis_get_info(vorbis);
+    if (info.channels < 1 || info.channels > 8 || info.sample_rate < 1000 ||
+        info.sample_rate > 768000) {
+        stb_vorbis_close(vorbis);
+        return err("audio: unsupported ogg stream '{}' ({} ch, {} Hz)", path, info.channels,
+                   info.sample_rate);
+    }
+
+    auto sound = std::make_unique<Sound>();
+    sound->stream = std::make_unique<Stream>();
+    sound->stream->vorbis = vorbis;
+    sound->stream->srcRate = static_cast<int>(info.sample_rate);
+    sound->stream->srcChannels = info.channels;
+    std::lock_guard lock(impl_->soundsMutex);
+    impl_->sounds.push_back(std::move(sound));
+    impl_->startFeeder();
+    impl_->feederWake.notify_all();
+    return SoundRef{static_cast<uint32_t>(impl_->sounds.size() - 1)};
+}
+
 void Mixer::unload(SoundRef sound) {
     std::lock_guard lock(impl_->soundsMutex);
     if (sound.id >= impl_->sounds.size() || impl_->sounds[sound.id] == nullptr) return;
@@ -264,6 +458,15 @@ VoiceRef Mixer::play(SoundRef soundRef, const PlayOptions& options) {
     // on this voice (seen as inactive → finished) and clobber our fresh
     // sound/position with its stale write-back.
     MixerImpl::StreamLock streamLock(impl_->stream);
+    if (sound->stream != nullptr) {
+        // One voice per stream: stop any other voice playing it and ask
+        // the feeder to rewind the decode.
+        for (Voice& voice : impl_->voices)
+            if (voice.sound == sound) voice.active.store(false, std::memory_order_release);
+        sound->stream->loop.store(options.loop, std::memory_order_relaxed);
+        sound->stream->restart.store(true, std::memory_order_release);
+        impl_->feederWake.notify_all();
+    }
     for (uint32_t i = 0; i < kVoiceCount; ++i) {
         Voice& voice = impl_->voices[i];
         if (voice.active.load(std::memory_order_acquire)) continue;

@@ -3,6 +3,8 @@
 
 #include <rendy/rendy.hpp>
 
+#include <string_view>
+
 #include <cmath>
 #include <cstdlib>
 #include <vector>
@@ -65,9 +67,20 @@ int main(int argc, char** argv) {
     auto pad = makePad(mixer);
     audio::VoiceRef padVoice;
 
+    // 07_audio [file.wav|file.ogg] [--stream]: --stream decodes the ogg on
+    // the fly (openStream) instead of fully at load.
     audio::SoundRef fileSound;
-    if (argc > 1) {
-        if (auto loaded = mixer.load(argv[1]))
+    bool streamed = false;
+    const char* filePath = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--stream")
+            streamed = true;
+        else
+            filePath = argv[i];
+    }
+    if (filePath != nullptr) {
+        auto loaded = streamed ? mixer.openStream(filePath) : mixer.load(filePath);
+        if (loaded)
             fileSound = loaded.value();
         else
             log::warn("{}", loaded.error().message);
@@ -100,10 +113,14 @@ int main(int argc, char** argv) {
     soundRow.addChild("button", {.text = "Thud"}).onClick([&](ui::Element) {
         mixer.play(thud, {});
     });
-    if (fileSound.valid())
+    if (fileSound.valid()) {
         soundRow.addChild("button", {.text = "Fil"}).onClick([&](ui::Element) {
             mixer.play(fileSound, {});
         });
+        // A passed file starts playing right away (looped when streamed —
+        // that's the music use case).
+        mixer.play(fileSound, {.loop = streamed});
+    }
 
     auto padRow = root.addChild("div", {.classes = "row"});
     padRow.addChild("div", {.classes = "label", .text = "Pad-loop"});
