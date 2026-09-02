@@ -11,6 +11,10 @@
 // ones, with no test-only injection API on the public surface.
 #include <SDL3/SDL.h>
 
+// The selection test computes its drag target from the same caret
+// geometry the widget uses (metrics-proof against font versions).
+#include "text/caret.hpp"
+
 #include <cmath>
 #include <cstdlib>
 
@@ -72,6 +76,13 @@ void injectWheel(float y) {
     SDL_Event event{};
     event.type = SDL_EVENT_MOUSE_WHEEL;
     event.wheel.y = y;
+    SDL_PushEvent(&event);
+}
+
+void injectMouseButton(bool down) {
+    SDL_Event event{};
+    event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+    event.button.button = SDL_BUTTON_LEFT;
     SDL_PushEvent(&event);
 }
 
@@ -199,6 +210,77 @@ TEST_CASE("ui damage cache: wheel scrolling invalidates and moves content", "[gp
     REQUIRE(closeTo(at(scrolled, 80, 40), 0x89, 0xB4, 0xFA)); // blue moved up
     REQUIRE(closeTo(at(scrolled, 80, 120), 0xF3, 0x8B, 0xA8)); // third item (pink)
     REQUIRE(meanDiff(scrolled, uiFrame()) == 0.0); // scrolled state replays clean
+}
+
+TEST_CASE("mixed-direction selection highlights disjoint pieces", "[gpu]") {
+    App app = makeApp();
+    ui::Context ui(app);
+    ui.addStylesheet("input { width: 400px; height: 60px; margin: 40px;"
+                     "        padding: 10px; background-color: #1e1e2e;"
+                     "        color: #ffffff; font-size: 24px; }");
+    // Logically "hej سلام عليكم igen"; on screen the Arabic block is
+    // reversed, so a selection from inside "hej" into سلام covers two
+    // visually separate pieces (the unselected عليكم sits between them).
+    const std::string_view line = "hej سلام عليكم igen";
+    ui.root().addChild("input", {.text = std::string(line)});
+    const auto uiFrame = [&] {
+        return renderOnce(app, colors::black, [&](Frame& frame) {
+            ui.update();
+            ui.paint(frame.canvas());
+        });
+    };
+
+    const Screenshot before = uiFrame(); // unfocused: no caret, no selection
+
+    // Aim the drag at real caret positions (the widget's own geometry):
+    // byte 1 is inside "hej", byte 8 is halfway into سلام. Text origin =
+    // margin 40 + padding 10.
+    text::Shaper shaper;
+    const char* fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    auto fontId = shaper.loadFont(fontPath);
+    if (!fontId) {
+        SUCCEED("no system DejaVu font — skipping");
+        return;
+    }
+    std::vector<text::ShapedGlyph> glyphs;
+    REQUIRE(shaper.shape(fontId.value(), 24.0f, line, &glyphs));
+    const float textLeft = 50.0f;
+    const float pressX = textLeft + text::caretX(glyphs, line, 1);
+    const float dragX = textLeft + text::caretX(glyphs, line, 8);
+
+    injectMouseMove(pressX, 70.0f);
+    injectMouseButton(true); // press: cursor = anchor = byte 1
+    uiFrame();
+    injectMouseMove(dragX, 70.0f); // drag: cursor = byte 8
+    uiFrame();                     // extends the selection
+    injectMouseButton(false);
+    const Screenshot selected = uiFrame();
+
+    // Column-wise diff over the text band: highlighted spans differ from
+    // the unselected shot. The caret is ~2px — ignore runs narrower than
+    // 5px — and a real disjoint selection shows >= 2 wide runs with a
+    // clean gap between them (the unselected middle of the Arabic block).
+    const auto columnChanged = [&](int x) {
+        double total = 0.0;
+        for (int y = 45; y < 95; ++y) {
+            const Pixel a = at(before, x, y);
+            const Pixel b = at(selected, x, y);
+            total += std::abs(a.r - b.r) + std::abs(a.g - b.g) + std::abs(a.b - b.b);
+        }
+        return total / 50.0 > 3.0;
+    };
+    int wideRuns = 0;
+    int runWidth = 0;
+    for (int x = 50; x < 430; ++x) {
+        if (columnChanged(x)) {
+            ++runWidth;
+        } else {
+            if (runWidth >= 5) ++wideRuns;
+            runWidth = 0;
+        }
+    }
+    if (runWidth >= 5) ++wideRuns;
+    REQUIRE(wideRuns >= 2);
 }
 
 TEST_CASE("resize recreates the swapchain and relayouts the ui", "[gpu]") {

@@ -28,8 +28,8 @@ GPU smoke tests (local only): configure with `-DRENDY_GPU_TESTS=ON`, run
 `ctest -L gpu` or `./build/debug/tests/rendy_gpu_tests`. Hidden window +
 screenshot readback (`App::requestScreenshot`); covers 2D/3D rendering,
 the UI damage cache (edit/hover/scroll invalidation via synthetic SDL
-events), resize → swapchain recreation, and probe ownership. Run them
-after renderer changes.
+events), resize → swapchain recreation, disjoint mixed-bidi selection
+highlights, and probe ownership. Run them after renderer changes.
 
 ## Where things live
 

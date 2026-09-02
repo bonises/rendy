@@ -165,6 +165,7 @@ struct ContextImpl {
     rendy::detail::CanvasSnapshot paintSnapshot;
     bool paintSnapshotValid = false;
     bool blinkOn = true; ///< caret blink phase, computed once per paint
+    std::vector<std::pair<float, float>> selectionScratch; ///< reused per paint
 
     void markDirty() {
         dirty = true;
@@ -788,14 +789,15 @@ struct ContextImpl {
         const float textTop = node->rect.top() + (node->rect.size.y - lineHeight) * 0.5f;
 
         if (isFocused && cursor != anchor) {
-            // Two caret stops bound the selection; RTL runs give x0 > x1,
-            // so order by position (single rect — fine for one-direction
-            // text, approximate across mixed runs).
-            float x0 = textLeft + caretXAt(node, std::min(cursor, anchor));
-            float x1 = textLeft + caretXAt(node, std::max(cursor, anchor));
-            if (x0 > x1) std::swap(x0, x1);
-            canvas.drawRect({{x0, textTop}, {x1 - x0, lineHeight}},
-                            {.color = s.textColor.fade(0.25f * opacity)});
+            // One rect per visually contiguous piece: a logical range in
+            // mixed-direction text is discontiguous on screen, so the
+            // highlight must skip the unselected middle.
+            text::selectionRects(shapeInput(node), node->text, std::min(cursor, anchor),
+                                 std::max(cursor, anchor), &selectionScratch);
+            for (const auto& [x0, x1] : selectionScratch)
+                if (x1 > x0)
+                    canvas.drawRect({{textLeft + x0, textTop}, {x1 - x0, lineHeight}},
+                                    {.color = s.textColor.fade(0.25f * opacity)});
         }
 
         if (!node->text.empty()) {

@@ -6,10 +6,9 @@
 // multi-byte clusters) and RTL runs (offset 0 sits at the run's right
 // edge). Pure functions — GPU-free, unit-testable.
 //
-// Selection rectangles built from two caretX() values are correct for
-// single-direction text; a selection spanning mixed-direction runs is
-// approximated by one rect (known limitation — visually it should be
-// several discontiguous rects).
+// Selections use selectionRects(): a logically contiguous byte range is
+// visually discontiguous across mixed-direction runs, so it yields one
+// x-interval per visually contiguous piece (touching pieces merge).
 
 #include "text/shaper.hpp"
 #include "text/utf8.hpp"
@@ -91,6 +90,51 @@ inline size_t caretFromX(const std::vector<ShapedGlyph>& glyphs, std::string_vie
         }
     }
     return best;
+}
+
+/// X-intervals (relative to the text origin) covering the selection
+/// [begin, end) in bytes. Each cluster's selected byte sub-range maps to
+/// an x sub-range exactly like caretX (linear inside clusters, mirrored
+/// in RTL); visually touching or overlapping pieces merge, so
+/// single-direction selections still come back as one interval while
+/// mixed-direction ones yield one interval per contiguous piece.
+inline void selectionRects(const std::vector<ShapedGlyph>& glyphs, std::string_view line,
+                           size_t begin, size_t end,
+                           std::vector<std::pair<float, float>>* out) {
+    out->clear();
+    end = std::min(end, line.size());
+    if (begin >= end || glyphs.empty() || line.empty()) return;
+    std::vector<ClusterExtent> extents;
+    clusterExtents(glyphs, &extents);
+    for (size_t i = 0; i < extents.size(); ++i) {
+        const ClusterExtent& cluster = extents[i];
+        const size_t clusterEnd =
+            i + 1 < extents.size() ? extents[i + 1].start : line.size();
+        const size_t lo = std::max(begin, cluster.start);
+        const size_t hi = std::min(end, clusterEnd);
+        if (lo >= hi) continue;
+        const size_t clusterBytes = std::max<size_t>(clusterEnd - cluster.start, 1);
+        const float f0 =
+            static_cast<float>(lo - cluster.start) / static_cast<float>(clusterBytes);
+        const float f1 =
+            static_cast<float>(hi - cluster.start) / static_cast<float>(clusterBytes);
+        const float width = cluster.xMax - cluster.xMin;
+        if (cluster.rtl)
+            out->push_back({cluster.xMax - f1 * width, cluster.xMax - f0 * width});
+        else
+            out->push_back({cluster.xMin + f0 * width, cluster.xMin + f1 * width});
+    }
+    if (out->empty()) return;
+    std::sort(out->begin(), out->end());
+    // Merge pieces that touch (half-pixel slack absorbs float noise).
+    size_t merged = 0;
+    for (size_t i = 1; i < out->size(); ++i) {
+        if ((*out)[i].first <= (*out)[merged].second + 0.5f)
+            (*out)[merged].second = std::max((*out)[merged].second, (*out)[i].second);
+        else
+            (*out)[++merged] = (*out)[i];
+    }
+    out->resize(merged + 1);
 }
 
 /// Sorted valid break offsets for emergency line breaking: every cluster

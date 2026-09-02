@@ -88,8 +88,7 @@ TextMetrics GlyphCache::metrics(uint32_t fontId, float pixelSize) {
 
 const std::vector<ShapedGlyph>& GlyphCache::shapeLine(uint32_t fontId, float pixelSize,
                                                       std::string_view line) {
-    shaper_.shape(fontId, pixelSize, line, &shapeScratch_);
-    return shapeScratch_;
+    return shapeCache_.shape(fontId, pixelSize, line);
 }
 
 GlyphCache::Page* GlyphCache::pageWithRoom(int width, int height, int* outX, int* outY) {

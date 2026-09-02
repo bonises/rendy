@@ -8,6 +8,7 @@
 #include "gpu/texture.hpp"
 #include "rendy/canvas/font.hpp"
 #include "rendy/core/result.hpp"
+#include "text/shape_cache.hpp"
 #include "text/shaper.hpp"
 
 #include <stb_rect_pack.h>
@@ -49,8 +50,10 @@ public:
 
     [[nodiscard]] bool hasFont(uint32_t fontId) const { return fontId < faces_.size(); }
 
-    /// Shapes one line (no '\n') into positioned glyph ids. The returned
-    /// vector is a reused scratch buffer — valid until the next call.
+    /// Shapes one line (no '\n') into positioned glyph ids, through an LRU
+    /// cache — repeated frames of the same text skip bidi + HarfBuzz. The
+    /// returned vector lives in the cache; use it right away (it stays
+    /// valid until the entry is evicted).
     const std::vector<ShapedGlyph>& shapeLine(uint32_t fontId, float pixelSize,
                                               std::string_view line);
 
@@ -80,7 +83,7 @@ private:
     FT_LibraryRec_* library_ = nullptr;
     std::vector<FT_FaceRec_*> faces_;
     Shaper shaper_; ///< font ids kept in lockstep with faces_
-    std::vector<ShapedGlyph> shapeScratch_;
+    ShapeCache shapeCache_{shaper_};
     // unique_ptr: stbrp_context self-references, so a Page must never move.
     std::vector<std::unique_ptr<Page>> pages_;
     std::unordered_map<uint64_t, GlyphInfo> glyphs_; // key: font|size|glyph id

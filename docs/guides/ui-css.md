@@ -140,7 +140,10 @@ ctrl+arrow word jumps, ctrl+A, Home/End, ctrl+Backspace, a blinking caret
 and horizontal scrolling when the text overflows. Line breaks in
 pasted/IME text are stripped (it stays single-line). Caret and selection
 follow the shaped text — correct inside ligatures and in RTL input (the
-caret for logical position 0 in Arabic text sits at the right edge). Style it like any element
+caret for logical position 0 in Arabic text sits at the right edge), and
+a selection spanning mixed LTR/RTL runs highlights each visually
+contiguous piece as its own rect, skipping the unselected middle.
+Style it like any element
 (give it a `width`; use `:focus` for the focus ring):
 
 ```cpp

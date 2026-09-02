@@ -110,3 +110,88 @@ TEST_CASE("cluster breaks keep combining marks attached", "[text][caret]") {
     REQUIRE(breaks.back() == line.size());
     for (size_t offset : breaks) REQUIRE(offset != 1); // inside a+mark cluster
 }
+
+TEST_CASE("selection rects: one interval in single-direction text", "[text][caret]") {
+    const char* fontPath = dejaVu();
+    if (fontPath == nullptr) {
+        SUCCEED("no system DejaVu font — skipping");
+        return;
+    }
+    Shaper shaper;
+    const uint32_t id = shaper.loadFont(fontPath).value();
+    std::vector<ShapedGlyph> glyphs;
+    std::vector<std::pair<float, float>> rects;
+
+    // LTR: exactly the caretX span, as one interval.
+    const std::string_view latin = "hello";
+    REQUIRE(shaper.shape(id, 16.0f, latin, &glyphs));
+    selectionRects(glyphs, latin, 1, 4, &rects);
+    REQUIRE(rects.size() == 1);
+    REQUIRE(rects[0].first == Approx(caretX(glyphs, latin, 1)));
+    REQUIRE(rects[0].second == Approx(caretX(glyphs, latin, 4)));
+
+    // RTL: still one interval, mirrored (later bytes sit further left).
+    const std::string_view arabic = "سلام";
+    REQUIRE(shaper.shape(id, 16.0f, arabic, &glyphs));
+    selectionRects(glyphs, arabic, 2, 6, &rects);
+    REQUIRE(rects.size() == 1);
+    REQUIRE(rects[0].first == Approx(caretX(glyphs, arabic, 6)));
+    REQUIRE(rects[0].second == Approx(caretX(glyphs, arabic, 2)));
+
+    // Degenerate ranges: empty.
+    selectionRects(glyphs, arabic, 3, 3, &rects);
+    REQUIRE(rects.empty());
+    selectionRects(glyphs, arabic, 6, 2, &rects);
+    REQUIRE(rects.empty());
+}
+
+TEST_CASE("selection rects: mixed-direction selections are disjoint", "[text][caret]") {
+    const char* fontPath = dejaVu();
+    if (fontPath == nullptr) {
+        SUCCEED("no system DejaVu font — skipping");
+        return;
+    }
+    Shaper shaper;
+    const uint32_t id = shaper.loadFont(fontPath).value();
+
+    // "hej سلام عليكم igen": bytes hej=0..2, sp 3, سلام=4..11, sp 12,
+    // عليكم=13..22, sp 23, igen=24..27. Visually the Arabic block is
+    // reversed: [عليكم سلام]. Selecting logically from inside "hej" into
+    // سلام covers pieces that are NOT visual neighbours (the end of hej at
+    // the left, سلام at the block's right edge) — two rects with the
+    // unselected عليكم in the gap between them.
+    const std::string_view line = "hej سلام عليكم igen";
+    std::vector<ShapedGlyph> glyphs;
+    REQUIRE(shaper.shape(id, 16.0f, line, &glyphs));
+    std::vector<std::pair<float, float>> rects;
+    selectionRects(glyphs, line, 1, 8, &rects); // "ej " + first half of سلام
+    REQUIRE(rects.size() == 2);
+    REQUIRE(rects[0].second < rects[1].first); // sorted, truly disjoint
+
+    // Partition check across every codepoint: each character's own
+    // highlight centre must fall inside the range's rects exactly when the
+    // character is selected. (The old single-rect approximation failed
+    // this — unselected عليكم sat inside the big rect.)
+    const auto covered = [&](float x) {
+        for (const auto& [x0, x1] : rects)
+            if (x >= x0 - 0.01f && x <= x1 + 0.01f) return true;
+        return false;
+    };
+    std::vector<std::pair<float, float>> charRect;
+    size_t offset = 0;
+    while (offset < line.size()) {
+        const size_t at = offset;
+        decodeUtf8(line, offset); // advances to the next codepoint
+        selectionRects(glyphs, line, at, offset, &charRect);
+        REQUIRE(charRect.size() == 1);
+        const float centre = 0.5f * (charRect[0].first + charRect[0].second);
+        const bool selected = at >= 1 && at < 8;
+        REQUIRE(covered(centre) == selected);
+    }
+
+    // The whole line selected merges back into one interval.
+    selectionRects(glyphs, line, 0, line.size(), &rects);
+    REQUIRE(rects.size() == 1);
+    REQUIRE(rects[0].first == Approx(0.0f).margin(0.01));
+    REQUIRE(rects[0].second == Approx(width(glyphs)).margin(0.01));
+}
