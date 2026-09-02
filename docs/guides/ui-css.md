@@ -87,6 +87,28 @@ Defaults differ from the browser where it helps UIs: every element is
 `display: flex; flex-direction: column; align-items: stretch`, so vertical
 stacking works with zero boilerplate.
 
+## Text input
+
+`addChild("input", ...)` creates a single-line text field. Clicking focuses
+it; typing edits with full UTF-8, mouse-drag/shift-arrow selection,
+ctrl+arrow word jumps, ctrl+A, Home/End, ctrl+Backspace, a blinking caret
+and horizontal scrolling when the text overflows. Style it like any element
+(give it a `width`; use `:focus` for the focus ring):
+
+```cpp
+auto field = toolbar.addChild("input", {.id = "name"});
+field.setPlaceholder("skriv här…")
+     .onChange([](ui::Element self) { /* every edit */ })
+     .onSubmit([](ui::Element self) { use(self.text()); self.setText(""); });
+field.focus(); // programmatic focus
+```
+
+```css
+input { width: 180px; padding: 7px 10px; border-width: 1px;
+        border-color: #45475a; transition: border-color 0.15s; }
+input:focus { border-color: #89b4fa; }
+```
+
 ## Fonts in CSS
 
 Register loaded fonts under a family name, then use `font-family`:

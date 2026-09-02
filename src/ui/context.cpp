@@ -3,6 +3,7 @@
 #include "app/app_impl.hpp"
 #include "css/cascade.hpp"
 #include "css/parser.hpp"
+#include "ui/text_edit.hpp"
 #include "ui/transitions.hpp"
 #include "ui/yoga_layout.hpp"
 
@@ -28,6 +29,16 @@ struct Node {
     std::string text;
     std::vector<Declaration> inlineStyle;
     std::function<void(Element)> onClick;
+    std::function<void(Element)> onChange;
+    std::function<void(Element)> onSubmit;
+
+    // "input" widget state.
+    std::string placeholder;
+    size_t editCursor = 0;   ///< caret (byte offset into text)
+    size_t editAnchor = 0;   ///< selection anchor (== cursor: no selection)
+    float textScrollX = 0.0f; ///< horizontal scroll when text overflows
+
+    [[nodiscard]] bool isInput() const { return tag == "input"; }
 
     YGNodeRef yoga = nullptr;
     css::ComputedStyle style; ///< effective style: cascade target, with any
@@ -223,6 +234,21 @@ struct ContextImpl {
                 focused = hit;
                 setPseudo(focused, css::kPseudoFocus, true);
             }
+            if (hit != nullptr && hit->isInput()) {
+                const size_t caret = caretFromX(hit, input.mousePos().x);
+                hit->editCursor = caret;
+                hit->editAnchor = input.shift() ? hit->editAnchor : caret;
+                markDirty();
+            }
+        }
+        // Drag inside a pressed input extends the selection.
+        if (pressed != nullptr && pressed->isInput() && input.mouseDown(MouseButton::Left) &&
+            !input.mousePressed(MouseButton::Left)) {
+            const size_t caret = caretFromX(pressed, input.mousePos().x);
+            if (caret != pressed->editCursor) {
+                pressed->editCursor = caret;
+                markDirty();
+            }
         }
         if (input.wheel().y != 0.0f && hit != nullptr) {
             if (Node* scroller = scrollTarget(hit)) {
@@ -233,6 +259,8 @@ struct ContextImpl {
                 markDirty(); // rects move; recompute
             }
         }
+        processTextEditing();
+
         // Click handlers go LAST: they may remove nodes, which would leave
         // `hit` (and anything derived from it) dangling for later steps.
         if (input.mouseReleased(MouseButton::Left)) {
@@ -249,6 +277,93 @@ struct ContextImpl {
             }
             pressed = nullptr;
         }
+    }
+
+    // ---------------------------------------------------------- text input
+
+    /// Text width of text[0..bytes) in the node's font.
+    float prefixWidth(Node* node, size_t bytes) {
+        Canvas canvas = app->canvas();
+        const DrawTextOptions options{.font = resolveFont(node->style.fontFamily),
+                                      .size = node->style.fontSize};
+        return canvas.measureText(std::string_view(node->text).substr(0, bytes), options).x;
+    }
+
+    float inputTextLeft(Node* node) {
+        return node->rect.left() + YGNodeLayoutGetPadding(node->yoga, YGEdgeLeft) -
+               node->textScrollX;
+    }
+
+    /// Caret byte offset closest to screen-space x.
+    size_t caretFromX(Node* node, float x) {
+        const float textLeft = inputTextLeft(node);
+        size_t best = 0;
+        float bestDist = std::abs(x - textLeft);
+        size_t pos = 0;
+        while (pos < node->text.size()) {
+            const size_t next = edit::nextCp(node->text, pos);
+            const float dist = std::abs(x - (textLeft + prefixWidth(node, next)));
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = next;
+            }
+            pos = next;
+        }
+        return best;
+    }
+
+    /// Keyboard editing on the focused <input>. Runs every frame; fires
+    /// onChange/onSubmit LAST (they may mutate the tree).
+    void processTextEditing() {
+        Node* node = focused;
+        if (node == nullptr || !node->isInput() ||
+            (node->pseudo & css::kPseudoDisabled) != 0)
+            return;
+        const Input& input = app->input;
+
+        edit::State state;
+        state.text = std::move(node->text);
+        state.cursor = std::min(node->editCursor, state.text.size());
+        state.anchor = std::min(node->editAnchor, state.text.size());
+
+        bool changed = false;
+        bool submitted = false;
+        if (!input.text().empty()) {
+            edit::insert(&state, input.text());
+            changed = true;
+        }
+        if (input.keyPressed(Key::Backspace)) changed |= edit::eraseBackward(&state, input.ctrl());
+        if (input.keyPressed(Key::Delete)) changed |= edit::eraseForward(&state, input.ctrl());
+        if (input.keyPressed(Key::Left)) {
+            edit::moveLeft(&state, input.shift(), input.ctrl());
+            markDirty();
+        }
+        if (input.keyPressed(Key::Right)) {
+            edit::moveRight(&state, input.shift(), input.ctrl());
+            markDirty();
+        }
+        if (input.keyPressed(Key::Home)) {
+            edit::moveHome(&state, input.shift());
+            markDirty();
+        }
+        if (input.keyPressed(Key::End)) {
+            edit::moveEnd(&state, input.shift());
+            markDirty();
+        }
+        if (input.ctrl() && input.keyPressed(Key::A)) {
+            edit::selectAll(&state);
+            markDirty();
+        }
+        if (input.keyPressed(Key::Enter)) submitted = true;
+
+        node->text = std::move(state.text);
+        node->editCursor = state.cursor;
+        node->editAnchor = state.anchor;
+        if (changed) markDirty();
+
+        // Handlers last — they may remove the node or clear its text.
+        if (changed && node->onChange) node->onChange(Element(node));
+        if (submitted && focused == node && node->onSubmit) node->onSubmit(Element(node));
     }
 
     void setPseudo(Node* node, uint8_t flag, bool on) {
@@ -400,11 +515,16 @@ struct ContextImpl {
 
         Canvas canvas = self->app->canvas();
         const DrawTextOptions options{.font = font, .size = node->style.fontSize};
+        // Inputs never wrap and keep their font height when empty.
+        std::string_view measured = node->text;
+        if (node->isInput() && measured.empty())
+            measured = node->placeholder.empty() ? std::string_view("M") : node->placeholder;
         Vec2 size;
-        if (widthMode == YGMeasureModeUndefined || width <= 0.0f || std::isnan(width))
-            size = canvas.measureText(node->text, options);
+        if (node->isInput() || widthMode == YGMeasureModeUndefined || width <= 0.0f ||
+            std::isnan(width))
+            size = canvas.measureText(measured, options);
         else
-            size = canvas.measureTextWrapped(node->text, width, options);
+            size = canvas.measureTextWrapped(measured, width, options);
         float w = size.x;
         if (widthMode == YGMeasureModeAtMost) w = std::min(w, width);
         float h = size.y;
@@ -417,7 +537,8 @@ struct ContextImpl {
     }
 
     void syncMeasure(Node* node) {
-        const bool wantsMeasure = node->children.empty() && !node->text.empty();
+        const bool wantsMeasure =
+            node->children.empty() && (!node->text.empty() || node->isInput());
         const bool hasMeasure = YGNodeHasMeasureFunc(node->yoga);
         if (wantsMeasure && !hasMeasure) YGNodeSetMeasureFunc(node->yoga, measureText);
         if (!wantsMeasure && hasMeasure) YGNodeSetMeasureFunc(node->yoga, nullptr);
@@ -475,7 +596,9 @@ struct ContextImpl {
         const bool clips = s.overflow != Overflow::Visible;
         if (clips) canvas.pushClip(node->rect);
 
-        if (!node->text.empty() && node->children.empty()) {
+        if (node->isInput()) {
+            paintInput(node, canvas, opacity);
+        } else if (!node->text.empty() && node->children.empty()) {
             const FontRef font = resolveFont(s.fontFamily);
             const DrawTextOptions options{.font = font, .size = s.fontSize,
                                           .color = s.textColor.fade(opacity)};
@@ -513,6 +636,68 @@ struct ContextImpl {
         }
 
         if (clips) canvas.popClip();
+    }
+
+    /// Single-line editable text: selection highlight, caret, placeholder,
+    /// horizontal scroll keeping the caret visible. Clipped to the field.
+    void paintInput(Node* node, Canvas& canvas, float opacity) {
+        const css::ComputedStyle& s = node->style;
+        const FontRef font = resolveFont(s.fontFamily);
+        const DrawTextOptions options{.font = font, .size = s.fontSize,
+                                      .color = s.textColor.fade(opacity)};
+        const float padLeft = YGNodeLayoutGetPadding(node->yoga, YGEdgeLeft);
+        const float padRight = YGNodeLayoutGetPadding(node->yoga, YGEdgeRight);
+        const float innerLeft = node->rect.left() + padLeft;
+        const float innerRight = node->rect.right() - padRight;
+        const bool isFocused = focused == node;
+
+        const size_t cursor = std::min(node->editCursor, node->text.size());
+        const size_t anchor = std::min(node->editAnchor, node->text.size());
+
+        // Keep the caret inside the visible span.
+        if (isFocused) {
+            const float caretOffset =
+                prefixWidth(node, cursor); // width of text before the caret
+            const float visible = std::max(innerRight - innerLeft, 1.0f);
+            if (caretOffset - node->textScrollX > visible)
+                node->textScrollX = caretOffset - visible;
+            if (caretOffset - node->textScrollX < 0.0f) node->textScrollX = caretOffset;
+        } else if (node->text.empty()) {
+            node->textScrollX = 0.0f;
+        }
+
+        canvas.pushClip({{innerLeft, node->rect.top()},
+                         {std::max(innerRight - innerLeft, 0.0f), node->rect.size.y}});
+
+        const float textLeft = innerLeft - node->textScrollX;
+        const float lineHeight = s.fontSize * 1.3f;
+        const float textTop = node->rect.top() + (node->rect.size.y - lineHeight) * 0.5f;
+
+        if (isFocused && cursor != anchor) {
+            const float x0 = textLeft + prefixWidth(node, std::min(cursor, anchor));
+            const float x1 = textLeft + prefixWidth(node, std::max(cursor, anchor));
+            canvas.drawRect({{x0, textTop}, {x1 - x0, lineHeight}},
+                            {.color = s.textColor.fade(0.25f * opacity)});
+        }
+
+        if (!node->text.empty()) {
+            canvas.drawText(node->text, {textLeft, textTop}, options);
+        } else if (!node->placeholder.empty()) {
+            DrawTextOptions faded = options;
+            faded.color = s.textColor.fade(0.4f * opacity);
+            canvas.drawText(node->placeholder, {textLeft, textTop}, faded);
+        }
+
+        if (isFocused) {
+            // Blinking caret (visible 2/3 of a 0.9s cycle).
+            const double time = static_cast<double>(SDL_GetTicksNS()) * 1e-9;
+            if (std::fmod(time, 0.9) < 0.6) {
+                const float caretX = textLeft + prefixWidth(node, cursor);
+                canvas.drawRect({{caretX, textTop}, {1.5f, lineHeight}},
+                                {.color = s.textColor.fade(opacity)});
+            }
+        }
+        canvas.popClip();
     }
 
     // ---------------------------------------------------------- hot reload
@@ -640,6 +825,36 @@ Element& Element::setDisabled(bool disabled) {
     if (node_ != nullptr) node_->ctx->setPseudo(node_, css::kPseudoDisabled, disabled);
     return *this;
 }
+
+Element& Element::onChange(std::function<void(Element)> handler) {
+    if (node_ != nullptr) node_->onChange = std::move(handler);
+    return *this;
+}
+
+Element& Element::onSubmit(std::function<void(Element)> handler) {
+    if (node_ != nullptr) node_->onSubmit = std::move(handler);
+    return *this;
+}
+
+Element& Element::setPlaceholder(std::string text) {
+    if (node_ != nullptr) {
+        node_->placeholder = std::move(text);
+        node_->ctx->markDirty();
+    }
+    return *this;
+}
+
+Element& Element::focus() {
+    if (node_ != nullptr && node_->ctx->focused != node_) {
+        detail::ContextImpl* ctx = node_->ctx;
+        ctx->setPseudo(ctx->focused, css::kPseudoFocus, false);
+        ctx->focused = node_;
+        ctx->setPseudo(node_, css::kPseudoFocus, true);
+    }
+    return *this;
+}
+
+bool Element::focused() const { return node_ != nullptr && node_->ctx->focused == node_; }
 
 const std::string& Element::text() const {
     static const std::string empty;

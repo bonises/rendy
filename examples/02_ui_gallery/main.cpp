@@ -67,6 +67,8 @@ int main(int, char** argv) {
     auto clickCount = std::make_shared<int>(0);
     auto rowCount = std::make_shared<int>(0);
     auto counter = toolbar.addChild("div", {.classes = "counter", .text = "0 clicks"});
+    auto nameInput = toolbar.addChild("input", {.id = "row-name"});
+    nameInput.setPlaceholder("nytt radnamn…");
 
     const char* names[] = {"Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta",
                            "Eta",   "Theta", "Iota", "Kappa", "Lambda",  "My",
@@ -90,6 +92,14 @@ int main(int, char** argv) {
         *rowCount = 0;
     });
     toolbar.addChild("button", {.text = "Disabled"}).setDisabled(true);
+    nameInput.onSubmit([list, rowCount](ui::Element self) mutable {
+        if (self.text().empty()) return;
+        auto row = list.addChild("div", {.classes = "row"});
+        row.addChild("div", {.classes = "index", .text = fmt::format("#{:02}", ++*rowCount)});
+        row.addChild("div", {.classes = "name", .text = self.text()});
+        row.addChild("div", {.classes = "badge", .text = "ny"});
+        self.setText("");
+    });
 
     double lastFpsUpdate = 0.0;
     while (app.pollEvents()) {

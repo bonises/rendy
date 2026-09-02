@@ -25,6 +25,8 @@ Cheap-copy handle; invalid after `remove()`.
 | `remove()` / `clearChildren()` | |
 | `setText / setClasses / addClass / removeClass` | mark dirty only on change |
 | `setStyle(const Style&)` | inline style, wins cascade |
+| `onChange` / `onSubmit` / `setPlaceholder` | `"input"` elements (single-line text fields) |
+| `focus()` / `focused()` | keyboard focus |
 | `onClick(fn)` | clicks bubble to nearest handler |
 | `setDisabled(bool)` | drives `:disabled`, blocks clicks |
 | `text() / bounds() / hovered() / valid()` | bounds = absolute px after layout |

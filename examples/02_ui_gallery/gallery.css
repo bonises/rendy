@@ -122,3 +122,15 @@ button:disabled { opacity: 0.4; }
   font-size: 13px;
   color: #6c7086;
 }
+
+input {
+  width: 180px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background-color: #313244;
+  border-width: 1px;
+  border-color: #45475a;
+  color: #cdd6f4;
+  transition: border-color 0.15s;
+}
+input:focus { border-color: #89b4fa; }

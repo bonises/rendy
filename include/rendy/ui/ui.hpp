@@ -59,6 +59,21 @@ public:
     Element& onClick(std::function<void(Element)> handler);
     Element& setDisabled(bool disabled);
 
+    // ---- "input" elements (single-line text fields) ----------------------
+    // Create with addChild("input", ...). Clicking focuses; typing edits
+    // (UTF-8, selection with shift/ctrl, mouse drag). Style with CSS like
+    // any element; give it a width (text never wraps).
+
+    /// Fired after every text change the user makes.
+    Element& onChange(std::function<void(Element)> handler);
+    /// Fired on Enter.
+    Element& onSubmit(std::function<void(Element)> handler);
+    /// Faded hint shown while the field is empty.
+    Element& setPlaceholder(std::string text);
+    /// Give this element keyboard focus (useful for inputs).
+    Element& focus();
+    [[nodiscard]] bool focused() const;
+
     [[nodiscard]] const std::string& text() const;
     /// Absolute pixel bounds from the latest layout.
     [[nodiscard]] Rect bounds() const;

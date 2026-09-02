@@ -20,3 +20,4 @@ add_custom_command(TARGET 02_ui_gallery POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_CURRENT_SOURCE_DIR}/02_ui_gallery/gallery.css
           $<TARGET_FILE_DIR:02_ui_gallery>/gallery.css)
+

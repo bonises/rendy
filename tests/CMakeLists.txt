@@ -10,6 +10,7 @@ add_executable(rendy_tests
   css/test_cascade.cpp
   css/test_transitions.cpp
   layout/test_layout.cpp
+  layout/test_text_edit.cpp
   scene/test_animation.cpp
   audio/test_mixer.cpp
 )
