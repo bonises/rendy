@@ -59,12 +59,29 @@ absolute).
 CSS allows; colors as `#rgb #rrggbb #rrggbbaa`, `rgb()/rgba()`, ~20 named
 colors, `transparent`.
 
+**Transitions**: `transition: <property> <duration> [<timing>] [<delay>]`
+(comma lists, `all`, `none`; times in `s` or `ms`; timing `linear | ease |
+ease-in | ease-out | ease-in-out`). Whenever a listed property changes — a
+`:hover` kicking in, a class toggled, a hot-reloaded stylesheet — the change
+animates instead of snapping:
+
+```css
+button { background-color: #45475a; transition: background-color 0.18s ease-out; }
+button:hover { background-color: #585b70; }
+```
+
+Animatable: `background-color`, `color`, `border-color`, `border-width`,
+`border-radius`, `opacity`, and `width`/`height` when both endpoints are
+`px` (animating them relayouts each frame). Typed API:
+`Style{}.transition(Prop::BackgroundColor, 0.2f)` (repeatable;
+`Prop::Count` = all). Everything else snaps.
+
 Unknown properties log one warning and are ignored — a stylesheet never
 fails to load because of them. Text inside elements word-wraps to the
 element's width (centered/right-aligned text wraps left-aligned when it
 overflows). Scrollable elements show a draggable scrollbar thumb. Not in v1:
-media queries, `!important`, attribute/sibling selectors,
-transitions/animations.
+media queries, `!important`, attribute/sibling selectors, keyframe
+animations.
 
 Defaults differ from the browser where it helps UIs: every element is
 `display: flex; flex-direction: column; align-items: stretch`, so vertical

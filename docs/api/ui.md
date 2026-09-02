@@ -36,7 +36,9 @@ Chainable setters mirroring the CSS properties:
 alignContent flexGrow flexShrink flexBasis gap rowGap columnGap width height
 minWidth minHeight maxWidth maxHeight padding(1/2/4) margin(1/2/4) position
 left top right bottom overflow borderWidth borderColor borderRadius
-backgroundColor textColor opacity fontSize fontFamily textAlign lineHeight`.
+backgroundColor textColor opacity fontSize fontFamily textAlign lineHeight`,
+plus `transition(Prop, seconds, Timing = Ease, delaySeconds = 0)` —
+repeatable; `Prop::Count` means "all animatable" (see the UI guide).
 
 Enums: `Display{Flex,None}`, `FlexDirection{Row,Column,RowReverse,ColumnReverse}`,
 `FlexWrap{NoWrap,Wrap,WrapReverse}`, `Justify{FlexStart,FlexEnd,Center,

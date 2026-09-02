@@ -3,6 +3,7 @@
 #include "app/app_impl.hpp"
 #include "css/cascade.hpp"
 #include "css/parser.hpp"
+#include "ui/transitions.hpp"
 #include "ui/yoga_layout.hpp"
 
 #include <yoga/Yoga.h>
@@ -29,11 +30,25 @@ struct Node {
     std::function<void(Element)> onClick;
 
     YGNodeRef yoga = nullptr;
-    css::ComputedStyle style;
+    css::ComputedStyle style; ///< effective style: cascade target, with any
+                              ///< in-flight transition values written over it
     Rect rect;               ///< absolute px, after layout
     Vec2 scrollOffset{0.0f};
     Vec2 contentSize{0.0f};  ///< children extent for scrolling
     uint8_t pseudo = 0;      ///< css::PseudoFlags
+
+    // CSS transitions in flight on this node.
+    struct ActiveTransition {
+        Prop prop{};
+        float elapsed = 0.0f;
+        float duration = 0.0f;
+        float delay = 0.0f;
+        Timing timing = Timing::Ease;
+        Vec4 from{0.0f};
+        Vec4 to{0.0f};
+    };
+    std::vector<ActiveTransition> activeTransitions;
+    bool everStyled = false; ///< first restyle never animates
 
     ~Node() {
         children.clear(); // children free their yoga nodes first
@@ -275,13 +290,104 @@ struct ContextImpl {
         }
 
         css::resolveStyle(sheetPtrs, match, &node->inlineStyle, &style);
+        const css::ComputedStyle old = std::move(node->style);
         node->style = std::move(style);
+        if (node->everStyled)
+            startTransitions(node, old);
+        else
+            node->everStyled = true;
 
         applyStyleToYoga(node->style, node->yoga);
         syncMeasure(node);
 
         for (auto& child : node->children)
             restyleTree(child.get(), &match, &node->style);
+    }
+
+    // --------------------------------------------------------- transitions
+
+    /// Called after the cascade wrote the new target into node->style while
+    /// `old` holds the previous *effective* style. Starts/retargets/drops
+    /// transitions and writes in-flight values back over the target so the
+    /// change animates instead of snapping.
+    void startTransitions(Node* node, const css::ComputedStyle& old) {
+        if (node->style.transitions.empty()) {
+            node->activeTransitions.clear();
+            return;
+        }
+        std::vector<TransitionSpec> specs;
+        for (const TransitionSpec& spec : node->style.transitions)
+            anim::expandSpec(spec, &specs);
+
+        // Drop in-flight transitions whose property is no longer listed.
+        std::erase_if(node->activeTransitions, [&](const Node::ActiveTransition& active) {
+            for (const TransitionSpec& spec : specs)
+                if (spec.prop == active.prop) return false;
+            return true;
+        });
+
+        for (const TransitionSpec& spec : specs) {
+            if (spec.duration <= 0.0f) continue;
+            Vec4 from{};
+            Vec4 to{};
+            if (!anim::getAnimatable(old, spec.prop, &from) ||
+                !anim::getAnimatable(node->style, spec.prop, &to))
+                continue; // auto/percent lengths etc: snap
+            Node::ActiveTransition* existing = nullptr;
+            for (Node::ActiveTransition& active : node->activeTransitions)
+                if (active.prop == spec.prop) existing = &active;
+
+            if (existing != nullptr && existing->to == to) {
+                // Same destination: keep the running transition, but paint
+                // this frame from where it currently is.
+                anim::setAnimatable(&node->style, spec.prop, from);
+                continue;
+            }
+            if (from == to) {
+                if (existing != nullptr)
+                    std::erase_if(node->activeTransitions,
+                                  [&](const Node::ActiveTransition& active) {
+                                      return active.prop == spec.prop;
+                                  });
+                continue;
+            }
+            if (existing == nullptr) {
+                node->activeTransitions.push_back({});
+                existing = &node->activeTransitions.back();
+            }
+            *existing = {spec.prop, 0.0f, spec.duration, spec.delay, spec.timing, from, to};
+            anim::setAnimatable(&node->style, spec.prop, from);
+        }
+    }
+
+    /// Advance all running transitions by dt; returns true when a re-layout
+    /// is needed (a layout-affecting property moved).
+    bool advanceTransitions(Node* node, float dt) {
+        bool layoutDirty = false;
+        bool yogaDirty = false;
+        for (auto it = node->activeTransitions.begin();
+             it != node->activeTransitions.end();) {
+            it->elapsed += dt;
+            const float t =
+                it->duration > 0.0f ? (it->elapsed - it->delay) / it->duration : 1.0f;
+            Vec4 value;
+            if (t >= 1.0f)
+                value = it->to;
+            else if (t <= 0.0f)
+                value = it->from;
+            else
+                value = glm::mix(it->from, it->to, anim::ease(it->timing, t));
+            anim::setAnimatable(&node->style, it->prop, value);
+            if (anim::affectsLayout(it->prop)) {
+                layoutDirty = true;
+                yogaDirty = true;
+            }
+            it = t >= 1.0f ? node->activeTransitions.erase(it) : it + 1;
+        }
+        if (yogaDirty) applyStyleToYoga(node->style, node->yoga);
+        for (auto& child : node->children)
+            layoutDirty |= advanceTransitions(child.get(), dt);
+        return layoutDirty;
     }
 
     static YGSize measureText(YGNodeConstRef yogaNode, float width, YGMeasureMode widthMode,
@@ -607,6 +713,7 @@ void Context::update() {
         impl_->layout();
         impl_->dirty = false;
     }
+    if (impl_->advanceTransitions(impl_->root.get(), impl_->app->dt)) impl_->layout();
 }
 
 void Context::paint(Canvas canvas) {

@@ -602,6 +602,82 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
         }
         return false;
     }
+    if (name == "transition") {
+        // transition: <property> <duration> [<timing>] [<delay>] {, ...}
+        // "none" clears; property "all" (or omitted) animates everything.
+        Declaration d{Prop::Transition, {}};
+        if (v.size() == 1 && v[0].is(TokenType::Ident) && v[0].value == "none") {
+            rule->declarations.push_back(std::move(d));
+            return true;
+        }
+        static constexpr std::pair<std::string_view, Prop> kAnimatable[] = {
+            {"all", Prop::Count},
+            {"background-color", Prop::BackgroundColor},
+            {"background", Prop::BackgroundColor},
+            {"color", Prop::TextColor},
+            {"border-color", Prop::BorderColor},
+            {"border-width", Prop::BorderWidth},
+            {"border-radius", Prop::BorderRadiusTL}, // expanded on start
+            {"opacity", Prop::Opacity},
+            {"width", Prop::Width},
+            {"height", Prop::Height},
+        };
+        static constexpr std::pair<std::string_view, ui::Timing> kTimings[] = {
+            {"linear", ui::Timing::Linear},         {"ease", ui::Timing::Ease},
+            {"ease-in", ui::Timing::EaseIn},        {"ease-out", ui::Timing::EaseOut},
+            {"ease-in-out", ui::Timing::EaseInOut},
+        };
+        auto seconds = [](const Token& t) -> std::optional<float> {
+            if (!t.is(TokenType::Dimension)) return std::nullopt;
+            if (t.unit == "s") return parseFloat(t.value);
+            if (t.unit == "ms") return parseFloat(t.value) / 1000.0f;
+            return std::nullopt;
+        };
+        size_t i = 0;
+        while (i < v.size()) {
+            ui::TransitionSpec spec;
+            bool haveDuration = false;
+            bool haveDelay = false;
+            for (; i < v.size() && !v[i].is(TokenType::Comma); ++i) {
+                if (auto s = seconds(v[i])) {
+                    if (!haveDuration) {
+                        spec.duration = *s;
+                        haveDuration = true;
+                    } else if (!haveDelay) {
+                        spec.delay = *s;
+                        haveDelay = true;
+                    } else {
+                        return false; // a third time value is invalid
+                    }
+                    continue;
+                }
+                if (!v[i].is(TokenType::Ident)) return false;
+                bool matched = false;
+                for (const auto& [ident, timing] : kTimings) {
+                    if (v[i].value == ident) {
+                        spec.timing = timing;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (matched) continue;
+                for (const auto& [ident, prop] : kAnimatable) {
+                    if (v[i].value == ident) {
+                        spec.prop = prop;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) return false; // unknown/unanimatable property
+            }
+            if (!haveDuration) return false;
+            d.value.transitions.push_back(spec);
+            if (i < v.size()) ++i; // skip the comma
+        }
+        if (d.value.transitions.empty()) return false;
+        rule->declarations.push_back(std::move(d));
+        return true;
+    }
     return false;
 }
 

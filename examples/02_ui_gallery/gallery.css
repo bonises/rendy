@@ -57,6 +57,7 @@ button {
   border-radius: 8px;
   background-color: #45475a;
   color: #cdd6f4;
+  transition: background-color 0.18s ease-out, color 0.18s ease-out;
 }
 
 button:hover { background-color: #585b70; }
@@ -94,6 +95,7 @@ button:disabled { opacity: 0.4; }
 }
 
 .row:hover { background-color: #313244; }
+.row { transition: background-color 0.25s; }
 
 .row .index {
   width: 40px;

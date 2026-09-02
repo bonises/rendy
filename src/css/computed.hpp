@@ -40,6 +40,9 @@ struct ComputedStyle {
     Vec4 borderRadius{0.0f}; ///< tl, tr, br, bl
     float opacity = 1.0f;
 
+    // Transitions (not inherited).
+    std::vector<ui::TransitionSpec> transitions;
+
     // Inherited text properties.
     Color textColor = colors::white;
     float fontSize = 15.0f;

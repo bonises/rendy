@@ -24,6 +24,9 @@ enum class TextAlign : uint8_t { Left, Center, Right };
 
 enum class Unit : uint8_t { None, Px, Percent, Em, Auto };
 
+/// Transition timing functions (the CSS cubic-bezier presets).
+enum class Timing : uint8_t { Linear, Ease, EaseIn, EaseOut, EaseInOut };
+
 struct Length {
     float value = 0.0f;
     Unit unit = Unit::None; ///< None = unset/initial
@@ -50,8 +53,18 @@ enum class Prop : uint8_t {
     BorderRadiusTL, BorderRadiusTR, BorderRadiusBR, BorderRadiusBL,
     BackgroundColor, TextColor, Opacity,
     FontSize, FontFamily, TextAlignProp, LineHeight,
+    Transition,
     Count,
     // clang-format on
+};
+
+/// One entry of a `transition:` declaration. `prop == Prop::Count` means
+/// "all animatable properties".
+struct TransitionSpec {
+    Prop prop = Prop::Count;
+    float duration = 0.0f; ///< seconds
+    float delay = 0.0f;    ///< seconds
+    Timing timing = Timing::Ease;
 };
 
 /// A property value; which member is meaningful depends on the property.
@@ -60,7 +73,8 @@ struct Value {
     Color color{};
     float number = 0.0f;
     uint8_t keyword = 0;
-    std::string text; ///< font-family only
+    std::string text;                       ///< font-family only
+    std::vector<TransitionSpec> transitions; ///< transition only
 };
 
 struct Declaration {
@@ -129,6 +143,23 @@ public:
     Style& textAlign(TextAlign v) { return keyword(Prop::TextAlignProp, static_cast<uint8_t>(v)); }
     Style& lineHeight(float factor) { return number(Prop::LineHeight, factor); }
     // clang-format on
+
+    /// Animate `prop` over `seconds` whenever it changes (like CSS
+    /// `transition: background-color 0.2s ease`). Call repeatedly to add
+    /// more properties; use Prop::Count for "all animatable".
+    Style& transition(Prop prop, float seconds, Timing timing = Timing::Ease,
+                      float delaySeconds = 0.0f) {
+        for (Declaration& d : declarations_) {
+            if (d.prop == Prop::Transition) {
+                d.value.transitions.push_back({prop, seconds, delaySeconds, timing});
+                return *this;
+            }
+        }
+        Declaration d{Prop::Transition, {}};
+        d.value.transitions.push_back({prop, seconds, delaySeconds, timing});
+        declarations_.push_back(std::move(d));
+        return *this;
+    }
 
     [[nodiscard]] const std::vector<Declaration>& declarations() const { return declarations_; }
 

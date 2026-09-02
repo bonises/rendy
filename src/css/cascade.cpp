@@ -118,6 +118,7 @@ void applyDeclaration(const Declaration& d, ComputedStyle* s) {
     case Prop::FontFamily: s->fontFamily = d.value.text; break;
     case Prop::LineHeight: s->lineHeight = d.value.number; break;
     // clang-format on
+    case Prop::Transition: s->transitions = d.value.transitions; break;
     case Prop::FontSize:
         // em resolves against the *inherited* size (already in s->fontSize).
         if (d.value.length.unit == Unit::Em)

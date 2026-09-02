@@ -8,6 +8,7 @@ add_executable(rendy_tests
   css/test_tokenizer.cpp
   css/test_parser.cpp
   css/test_cascade.cpp
+  css/test_transitions.cpp
   layout/test_layout.cpp
   scene/test_animation.cpp
   audio/test_mixer.cpp
