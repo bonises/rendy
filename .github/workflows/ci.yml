@@ -43,7 +43,8 @@ jobs:
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxfixes-dev libxss-dev libxkbcommon-dev \
             libwayland-dev libdecor-0-dev libegl1-mesa-dev libgl1-mesa-dev \
-            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev
+            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev \
+            fonts-dejavu-core
 
       - name: Set up ccache
         uses: actions/cache@v4

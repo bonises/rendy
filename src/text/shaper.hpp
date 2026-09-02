@@ -1,0 +1,73 @@
+#pragma once
+
+// HarfBuzz text shaping: Unicode text → positioned glyph indices, with
+// ligatures, kerning and complex-script support (Arabic joining, Indic
+// reordering). Uses hb-ot font functions on the raw font file — FreeType
+// stays the rasterizer, so this class is GPU-free and unit-testable.
+//
+// Direction/script are guessed per line (hb_buffer_guess_segment_properties);
+// full bidi (mixed LTR/RTL in one string) is out of scope for v1.
+
+#include "rendy/core/result.hpp"
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+struct hb_blob_t;
+struct hb_face_t;
+struct hb_font_t;
+struct hb_buffer_t;
+
+namespace rendy::text {
+
+struct ShapedGlyph {
+    uint32_t glyphIndex = 0; ///< font glyph id (0 = .notdef)
+    uint32_t cluster = 0;    ///< byte offset of the source character(s)
+    float xAdvance = 0.0f;   ///< px
+    float xOffset = 0.0f;    ///< px, added to the pen position
+    float yOffset = 0.0f;    ///< px, positive = up (font space)
+};
+
+class Shaper {
+public:
+    Shaper();
+    ~Shaper();
+
+    Shaper(const Shaper&) = delete;
+    Shaper& operator=(const Shaper&) = delete;
+
+    /// Reads the font file; returns its slot id (kept in lockstep with the
+    /// GlyphCache font ids by loading in the same order).
+    Result<uint32_t> loadFont(const std::string& path);
+
+    [[nodiscard]] bool hasFont(uint32_t fontId) const {
+        return fontId < fonts_.size() && fonts_[fontId].font != nullptr;
+    }
+
+    /// Shapes one line (no '\n' handling) into positioned glyphs, appended
+    /// to `out` (cleared first). Returns false for unknown fonts.
+    bool shape(uint32_t fontId, float pixelSize, std::string_view utf8,
+               std::vector<ShapedGlyph>* out);
+
+    /// A maximal same-direction slice of one line (internal, exposed for
+    /// the run splitter).
+    struct DirectionRun {
+        size_t start = 0;
+        size_t end = 0;
+        bool rtl = false;
+    };
+
+private:
+    struct Font {
+        hb_blob_t* blob = nullptr;
+        hb_face_t* face = nullptr;
+        hb_font_t* font = nullptr;
+    };
+    std::vector<Font> fonts_;
+    hb_buffer_t* buffer_ = nullptr;
+    std::vector<DirectionRun> runs_;
+};
+
+} // namespace rendy::text

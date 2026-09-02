@@ -85,6 +85,16 @@ FetchContent_Declare(freetype
   GIT_TAG 42608f77f20749dd6ddc9e0536788eaad70ea4b5 # VER-2-13-3
   SYSTEM EXCLUDE_FROM_ALL)
 
+# --------------------------------------------------------- HarfBuzz 10.2.0
+# Core shaping only (hb-ot font funcs — no FreeType/GLib/ICU coupling);
+# FreeType stays the rasterizer, HarfBuzz provides glyph mapping + advances.
+set(HB_BUILD_UTILS OFF CACHE BOOL "" FORCE)
+set(HB_BUILD_SUBSET OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(harfbuzz
+  GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz
+  GIT_TAG 818890f8f6c364ed111689a40ad510c415e559a1 # 10.2.0
+  SYSTEM EXCLUDE_FROM_ALL)
+
 # ------------------------------------------------------------- Yoga v3.2.1
 FetchContent_Declare(yoga
   GIT_REPOSITORY https://github.com/facebook/yoga
@@ -136,7 +146,7 @@ set(VULKAN_HEADERS_INSTALL_DIR "${vulkanheaders_SOURCE_DIR}" CACHE PATH "" FORCE
 FetchContent_MakeAvailable(
   fmt glm Catch2 SDL3
   volk VulkanMemoryAllocator glslang
-  freetype yoga fastgltf draco basisu stb dr_libs)
+  freetype harfbuzz yoga fastgltf draco basisu stb dr_libs)
 
 # draco's CMake does not export include directories on its targets; the
 # generated draco_features.h lands in ${CMAKE_BINARY_DIR}/draco/.

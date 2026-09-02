@@ -16,10 +16,10 @@ namespace {
 constexpr int kPageSize = 1024;
 constexpr int kGlyphPadding = 1;
 
-uint64_t glyphKey(uint32_t fontId, uint32_t pixelSize, uint32_t codepoint) {
-    // 8 bits font, 12 bits size, 21+ bits codepoint.
+uint64_t glyphKey(uint32_t fontId, uint32_t pixelSize, uint32_t glyphIndex) {
+    // 8 bits font, 12 bits size, 32 bits glyph id.
     return (static_cast<uint64_t>(fontId) << 56) | (static_cast<uint64_t>(pixelSize) << 44) |
-           codepoint;
+           glyphIndex;
 }
 
 const char* const kDefaultFontPaths[] = {
@@ -48,6 +48,10 @@ Result<FontRef> GlyphCache::loadFont(const std::string& path) {
     FT_Face face = nullptr;
     if (FT_New_Face(library_, path.c_str(), 0, &face) != 0)
         return err("failed to load font '{}'", path);
+    // The shaper claims a slot even on failure, keeping ids in lockstep;
+    // it reads the same file FreeType just parsed, so failure is unlikely.
+    if (auto shaped = shaper_.loadFont(path); !shaped)
+        log::warn("{} — text in this font won't shape", shaped.error().message);
     faces_.push_back(face);
     return FontRef{static_cast<uint32_t>(faces_.size() - 1)};
 }
@@ -82,15 +86,10 @@ TextMetrics GlyphCache::metrics(uint32_t fontId, float pixelSize) {
     };
 }
 
-float GlyphCache::kerning(uint32_t fontId, float pixelSize, uint32_t leftGlyph,
-                          uint32_t rightGlyph) {
-    if (!hasFont(fontId) || leftGlyph == 0 || rightGlyph == 0) return 0.0f;
-    FT_Face face = faces_[fontId];
-    if (!FT_HAS_KERNING(face)) return 0.0f;
-    setPixelSize(fontId, pixelSize);
-    FT_Vector delta{};
-    FT_Get_Kerning(face, leftGlyph, rightGlyph, FT_KERNING_DEFAULT, &delta);
-    return static_cast<float>(delta.x) / 64.0f;
+const std::vector<ShapedGlyph>& GlyphCache::shapeLine(uint32_t fontId, float pixelSize,
+                                                      std::string_view line) {
+    shaper_.shape(fontId, pixelSize, line, &shapeScratch_);
+    return shapeScratch_;
 }
 
 GlyphCache::Page* GlyphCache::pageWithRoom(int width, int height, int* outX, int* outY) {
@@ -130,24 +129,23 @@ GlyphCache::Page* GlyphCache::pageWithRoom(int width, int height, int* outX, int
     return &newPage;
 }
 
-const GlyphInfo* GlyphCache::glyph(uint32_t fontId, float pixelSize, uint32_t codepoint) {
+const GlyphInfo* GlyphCache::glyph(uint32_t fontId, float pixelSize, uint32_t glyphIndex) {
     if (!hasFont(fontId)) return nullptr;
     const auto sizeKey =
         static_cast<uint32_t>(std::lround(std::clamp(pixelSize, 1.0f, 512.0f)));
-    const uint64_t key = glyphKey(fontId, sizeKey, codepoint);
+    const uint64_t key = glyphKey(fontId, sizeKey, glyphIndex);
     if (auto it = glyphs_.find(key); it != glyphs_.end()) return &it->second;
 
     FT_Face face = faces_[fontId];
     setPixelSize(fontId, pixelSize);
-    const FT_UInt index = FT_Get_Char_Index(face, codepoint);
-    if (FT_Load_Glyph(face, index, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) return nullptr;
+    if (FT_Load_Glyph(face, glyphIndex, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0)
+        return nullptr;
 
     const FT_GlyphSlot slot = face->glyph;
     const FT_Bitmap& bitmap = slot->bitmap;
 
     GlyphInfo info;
     info.advance = static_cast<float>(slot->advance.x) / 64.0f;
-    info.ftGlyphIndex = index;
     info.size = {static_cast<float>(bitmap.width), static_cast<float>(bitmap.rows)};
     info.bearing = {static_cast<float>(slot->bitmap_left), static_cast<float>(slot->bitmap_top)};
     info.hasPixels = bitmap.width > 0 && bitmap.rows > 0;

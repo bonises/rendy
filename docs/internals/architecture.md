@@ -61,10 +61,17 @@ per-frame-slot mapped SSBO and render as ONE
   instanced batch, no extra draw calls.
 - Clipping is shader-side: a per-frame SSBO of clip rects, an index per
   instance — scissor never breaks the batch.
+- Text shapes through HarfBuzz (`src/text/shaper.*`, hb-ot font funcs — no
+  FreeType coupling): ligatures, kerning and complex scripts (Arabic
+  joining etc.) per line, with lines split into direction runs (an RTL
+  run's glyphs come back in visual order; runs lay out in logical order —
+  full bidi reordering is a known non-goal for v1). Positioning uses
+  HarfBuzz advances exclusively, so measure and draw always agree.
 - Text quads sample R8 glyph-atlas pages (`src/text/glyph_cache.*`:
-  FreeType raster → stb_rect_pack into 1024² pages, uploaded on change).
-  Note: `stbrp_context` self-references, so atlas pages live behind
-  `unique_ptr` and must never move.
+  FreeType raster → stb_rect_pack into 1024² pages, uploaded on change),
+  cached per (font, size, **glyph id**) — the shaper's output, not
+  codepoints. Note: `stbrp_context` self-references, so atlas pages live
+  behind `unique_ptr` and must never move.
 - Colors are sRGB in instance data, converted to linear in the shader; the
   sRGB swapchain encodes on write, so blending is linear-correct.
 - **Damage-based UI painting**: `ui::Context` records the quads (and clip

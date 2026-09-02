@@ -33,6 +33,7 @@ add_library(rendy STATIC
   src/canvas/canvas.cpp
   src/canvas/renderer2d.cpp
   src/text/glyph_cache.cpp
+  src/text/shaper.cpp
   src/css/tokenizer.cpp
   src/css/parser.cpp
   src/css/cascade.cpp
@@ -89,6 +90,7 @@ target_link_libraries(rendy
     GPUOpen::VulkanMemoryAllocator
     stb::stb
     freetype
+    harfbuzz
     yogacore
     fastgltf::fastgltf
     draco::draco

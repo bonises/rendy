@@ -61,6 +61,10 @@ canvas.drawText("hej!", {x, y}, {.font = app.defaultFont(), .size = 16,
   ascent/descent/lineHeight for precise layout (see `03_text_editor_lite`).
 - The default font is a system sans-serif found at startup; load specific
   fonts with `app.loadFont("font.ttf")` (e.g. a monospace for editors).
+- Text is shaped with HarfBuzz: kerning, ligatures and complex scripts
+  (Arabic joining, Indic reordering) work in any loaded font. Lines are
+  split into direction runs, so an embedded RTL phrase renders correctly
+  inside Latin text (full mixed-direction bidi reordering is not in v1).
 - Glyphs are rasterized by FreeType with light hinting into an atlas and
   positioned on integer pixels — tuned for crisp UI/editor text, not for
   large decorative headlines (scale a texture for that).

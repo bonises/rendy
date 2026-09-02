@@ -41,7 +41,7 @@ Dependency pins: `cmake/Dependencies.cmake`. Shader build: `cmake/CompileShaders
 
 ## Conventions
 
-- Public headers never include Vulkan/SDL/FreeType/Yoga headers — opaque
+- Public headers never include Vulkan/SDL/FreeType/HarfBuzz/Yoga headers — opaque
   handles and pimpl only. GLM is the one allowed public dependency (aliased
   as `rendy::Vec3` etc. in `math/math.hpp`); fmt is public for `log.hpp`.
 - No exceptions across the public API: fallible ops return `rendy::Result<T>`

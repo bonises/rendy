@@ -60,36 +60,37 @@ void Canvas::drawImage(TextureRef texture, const Rect& rect, const DrawImageOpti
 
 namespace {
 
-// Shared walk for drawText/measureText: greedy shaping with kerning.
+// Shared walk for drawText/measureText: HarfBuzz shaping per line —
+// ligatures, kerning and complex scripts come from the shaper; the glyph
+// cache rasterizes the resulting glyph ids on demand.
 template <typename PerGlyph>
 Vec2 layoutText(text::GlyphCache& cache, std::string_view str, Vec2 pos, FontRef font,
                 float size, PerGlyph&& perGlyph) {
     const TextMetrics metrics = cache.metrics(font.id, size);
-    float x = std::round(pos.x);
+    const float startX = std::round(pos.x);
     float baseline = std::round(pos.y + metrics.ascent);
-    float maxX = x;
-    size_t offset = 0;
-    uint32_t prevGlyph = 0;
-    int lines = 1;
-    while (offset < str.size()) {
-        const uint32_t codepoint = text::decodeUtf8(str, offset);
-        if (codepoint == '\n') {
-            maxX = std::max(maxX, x);
-            x = std::round(pos.x);
-            baseline += metrics.lineHeight;
-            prevGlyph = 0;
-            lines++;
-            continue;
+    float maxX = startX;
+    int lines = 0;
+    size_t lineStart = 0;
+    while (lineStart <= str.size()) {
+        const size_t newline = str.find('\n', lineStart);
+        const std::string_view line = str.substr(
+            lineStart,
+            (newline == std::string_view::npos ? str.size() : newline) - lineStart);
+        lines++;
+        float x = startX;
+        for (const text::ShapedGlyph& shaped : cache.shapeLine(font.id, size, line)) {
+            const text::GlyphInfo* glyph = cache.glyph(font.id, size, shaped.glyphIndex);
+            if (glyph != nullptr)
+                perGlyph(*glyph, x + shaped.xOffset, baseline - shaped.yOffset);
+            x += shaped.xAdvance;
         }
-        const text::GlyphInfo* glyph = cache.glyph(font.id, size, codepoint);
-        if (glyph == nullptr) continue;
-        x += cache.kerning(font.id, size, prevGlyph, glyph->ftGlyphIndex);
-        perGlyph(*glyph, x, baseline);
-        x += glyph->advance;
-        prevGlyph = glyph->ftGlyphIndex;
+        maxX = std::max(maxX, x);
+        if (newline == std::string_view::npos) break;
+        lineStart = newline + 1;
+        baseline += metrics.lineHeight;
     }
-    maxX = std::max(maxX, x);
-    return {maxX - std::round(pos.x), static_cast<float>(lines) * metrics.lineHeight};
+    return {maxX - startX, static_cast<float>(lines) * metrics.lineHeight};
 }
 
 } // namespace
