@@ -85,6 +85,27 @@ FrameRing::FrameInfo FrameRing::begin() {
     }
     flushCompleted();
 
+    const auto recreateSwapchain = [&]() -> bool {
+        if (!swapchain_.recreate()) return false;
+        if (renderFinished_.size() != swapchain_.imageCount()) {
+            for (VkSemaphore sem : renderFinished_)
+                vkDestroySemaphore(ctx_.device(), sem, nullptr);
+            renderFinished_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
+            for (VkSemaphore& sem : renderFinished_) {
+                VkSemaphoreCreateInfo semInfo{};
+                semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                VK_CHECK(vkCreateSemaphore(ctx_.device(), &semInfo, nullptr, &sem));
+            }
+        }
+        return true;
+    };
+
+    // Resize events mark the swapchain stale — the WSI doesn't reliably
+    // return OUT_OF_DATE on resize (X11 hidden windows and several Wayland
+    // compositors never do), so acquiring the old extent would keep
+    // rendering at the stale size forever.
+    if (swapchain_.stale() && !recreateSwapchain()) return {};
+
     // Acquire, recreating the swapchain when it's stale. If we still can't
     // acquire after a recreate, skip the frame instead of submitting with an
     // unsignaled semaphore (that would hang the queue).
@@ -98,17 +119,7 @@ FrameRing::FrameInfo FrameRing::begin() {
             break;
         }
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-            if (!swapchain_.recreate()) return {};
-            if (renderFinished_.size() != swapchain_.imageCount()) {
-                for (VkSemaphore sem : renderFinished_)
-                    vkDestroySemaphore(ctx_.device(), sem, nullptr);
-                renderFinished_.assign(swapchain_.imageCount(), VK_NULL_HANDLE);
-                for (VkSemaphore& sem : renderFinished_) {
-                    VkSemaphoreCreateInfo semInfo{};
-                    semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-                    VK_CHECK(vkCreateSemaphore(ctx_.device(), &semInfo, nullptr, &sem));
-                }
-            }
+            if (!recreateSwapchain()) return {};
             continue;
         }
         VK_CHECK(result);

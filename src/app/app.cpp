@@ -233,6 +233,11 @@ bool AppImpl::pollEvents() {
         case SDL_EVENT_TEXT_INPUT:
             input.text_ += event.text.text;
             break;
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+            // The WSI won't always report OUT_OF_DATE on resize; recreate
+            // proactively at the next beginFrame.
+            if (swapchain) swapchain->markStale();
+            break;
         default:
             break;
         }

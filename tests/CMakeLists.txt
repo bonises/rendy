@@ -36,7 +36,9 @@ option(RENDY_GPU_TESTS "Build GPU smoke tests (needs a Vulkan device)" OFF)
 if(RENDY_GPU_TESTS)
   add_executable(rendy_gpu_tests gpu/test_gpu.cpp)
   target_include_directories(rendy_gpu_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  # SDL3 for synthetic input events + window resizes (drives App from the
+  # outside instead of adding a test-only injection API).
   target_link_libraries(rendy_gpu_tests PRIVATE rendy::rendy Catch2::Catch2WithMain
-                                                rendy::warnings)
+                                                rendy::warnings SDL3::SDL3)
   catch_discover_tests(rendy_gpu_tests PROPERTIES LABELS gpu RUN_SERIAL ON)
 endif()

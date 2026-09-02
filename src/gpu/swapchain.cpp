@@ -119,6 +119,7 @@ bool Swapchain::recreate() {
         viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &imageViews_[i]));
     }
+    stale_ = false; // kept set on the zero-size early-out: retry next frame
     return true;
 }
 

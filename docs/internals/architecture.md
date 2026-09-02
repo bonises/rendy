@@ -233,9 +233,12 @@ window, per-frame screenshot readback (`App::requestScreenshot` — the
 swapchain carries TRANSFER_SRC and the captured frame copies into a
 host-visible buffer at present). Assertions are robust invariants (pixel
 colors, image mean-diffs), not golden hashes. Covered: 2D clear/rect/text
-readback, damage-cache replay byte-identity + invalidation, a lit 3D
-cube, and the reflection-probe A→B→A ownership regression (verified to
-fail when the ownership gate is removed). CPU-only CI never builds these.
+readback, damage-cache replay byte-identity + invalidation (text edits,
+:hover restyles, wheel scrolling — input injected as synthetic SDL events,
+so App sees them exactly like real ones), window resize → swapchain
+recreation + relayout, a lit 3D cube, and the reflection-probe A→B→A
+ownership regression (verified to fail when the ownership gate is
+removed). CPU-only CI never builds these.
 
 ## Conventions worth keeping
 

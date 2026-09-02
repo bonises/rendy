@@ -20,6 +20,12 @@ public:
     /// is currently zero-sized (minimized) — caller should skip the frame.
     bool recreate();
 
+    /// The window told us its pixel size changed. X11/Wayland don't
+    /// reliably return VK_ERROR_OUT_OF_DATE on resize (hidden windows on
+    /// X11 never do), so FrameRing also recreates when this is set.
+    void markStale() { stale_ = true; }
+    bool stale() const { return stale_; }
+
     /// Screenshot readback possible? (Needs surface TRANSFER_SRC support
     /// and one of the two 8-bit sRGB formats — both optional in Vulkan.)
     bool captureSupported() const { return captureSupported_; }
@@ -43,6 +49,7 @@ private:
     VkColorSpaceKHR colorSpace_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkExtent2D extent_{};
     bool vsync_ = true;
+    bool stale_ = false; ///< window resized; recreate before next acquire
     std::vector<VkImage> images_;
     std::vector<VkImageView> imageViews_;
 };

@@ -6,6 +6,11 @@
 
 #include <rendy/rendy.hpp>
 
+// The library never leaks SDL, but the tests drive it from the outside:
+// synthetic input events and window resizes reach App exactly like real
+// ones, with no test-only injection API on the public surface.
+#include <SDL3/SDL.h>
+
 #include <cmath>
 #include <cstdlib>
 
@@ -53,6 +58,21 @@ Pixel at(const Screenshot& shot, int x, int y) {
 bool closeTo(Pixel p, int r, int g, int b, int tolerance = 6) {
     return std::abs(p.r - r) <= tolerance && std::abs(p.g - g) <= tolerance &&
            std::abs(p.b - b) <= tolerance;
+}
+
+void injectMouseMove(float x, float y) {
+    SDL_Event event{};
+    event.type = SDL_EVENT_MOUSE_MOTION;
+    event.motion.x = x;
+    event.motion.y = y;
+    SDL_PushEvent(&event);
+}
+
+void injectWheel(float y) {
+    SDL_Event event{};
+    event.type = SDL_EVENT_MOUSE_WHEEL;
+    event.wheel.y = y;
+    SDL_PushEvent(&event);
 }
 
 /// Mean absolute per-channel difference over the whole image.
@@ -119,6 +139,99 @@ TEST_CASE("ui damage cache: replay is pixel-identical, edits invalidate", "[gpu]
     label.setText("changed!"); // marks dirty → re-record
     const Screenshot edited = uiFrame();
     REQUIRE(meanDiff(recorded, edited) > 0.05);
+}
+
+TEST_CASE("ui damage cache: hover invalidates and repaints", "[gpu]") {
+    App app = makeApp();
+    ui::Context ui(app);
+    // Margin keeps the button away from (0,0) — the mouse rests there
+    // before any motion event, and would sit on the button from frame one.
+    ui.addStylesheet(".btn { width: 200px; height: 100px; margin: 40px;"
+                     "       background-color: #313244; }"
+                     ".btn:hover { background-color: #f38ba8; }");
+    ui.root().addChild("div", {.classes = "btn"});
+    const auto uiFrame = [&] {
+        return renderOnce(app, colors::black, [&](Frame& frame) {
+            ui.update();
+            ui.paint(frame.canvas());
+        });
+    };
+
+    const Screenshot idle = uiFrame();
+    REQUIRE(closeTo(at(idle, 140, 90), 0x31, 0x32, 0x44));
+    REQUIRE(meanDiff(idle, uiFrame()) == 0.0); // steady state replays clean
+
+    injectMouseMove(140.0f, 90.0f); // onto the button → :hover restyle
+    const Screenshot hovered = uiFrame();
+    REQUIRE(closeTo(at(hovered, 140, 90), 0xF3, 0x8B, 0xA8));
+    REQUIRE(meanDiff(hovered, uiFrame()) == 0.0); // steady hover replays too
+
+    injectMouseMove(500.0f, 300.0f); // off → resting color returns
+    REQUIRE(closeTo(at(uiFrame(), 140, 90), 0x31, 0x32, 0x44));
+}
+
+TEST_CASE("ui damage cache: wheel scrolling invalidates and moves content", "[gpu]") {
+    App app = makeApp();
+    ui::Context ui(app);
+    // flex-shrink: 0 — column-flex children shrink-to-fit by default (per
+    // CSS); the items must keep 80px each to overflow and scroll.
+    ui.addStylesheet("#list { width: 200px; height: 160px; overflow: scroll; }"
+                     ".a, .b { height: 80px; flex-shrink: 0; }"
+                     ".a { background-color: #f38ba8; }"
+                     ".b { background-color: #89b4fa; }");
+    auto list = ui.root().addChild("div", {.id = "list"});
+    for (int i = 0; i < 6; ++i)
+        list.addChild("div", {.classes = (i % 2 != 0) ? "b" : "a"});
+    const auto uiFrame = [&] {
+        return renderOnce(app, colors::black, [&](Frame& frame) {
+            ui.update();
+            ui.paint(frame.canvas());
+        });
+    };
+
+    const Screenshot top = uiFrame();
+    REQUIRE(closeTo(at(top, 80, 40), 0xF3, 0x8B, 0xA8));  // first item (pink)
+    REQUIRE(closeTo(at(top, 80, 120), 0x89, 0xB4, 0xFA)); // second item (blue)
+
+    injectMouseMove(80.0f, 80.0f); // over the list
+    injectWheel(-2.0f);            // scroll down 96px
+    const Screenshot scrolled = uiFrame();
+    REQUIRE(closeTo(at(scrolled, 80, 40), 0x89, 0xB4, 0xFA)); // blue moved up
+    REQUIRE(closeTo(at(scrolled, 80, 120), 0xF3, 0x8B, 0xA8)); // third item (pink)
+    REQUIRE(meanDiff(scrolled, uiFrame()) == 0.0); // scrolled state replays clean
+}
+
+TEST_CASE("resize recreates the swapchain and relayouts the ui", "[gpu]") {
+    App app = makeApp();
+    ui::Context ui(app);
+    ui.addStylesheet(".bar { width: 100%; height: 60px; background-color: #a6e3a1; }");
+    ui.root().addChild("div", {.classes = "bar"});
+    const auto uiFrame = [&] {
+        return renderOnce(app, colors::black, [&](Frame& frame) {
+            ui.update();
+            ui.paint(frame.canvas());
+        });
+    };
+
+    const Screenshot before = uiFrame();
+    REQUIRE(before.size == kSize);
+    REQUIRE(closeTo(at(before, kSize.x - 10, 30), 0xA6, 0xE3, 0xA1));
+
+    int count = 0;
+    SDL_Window** windows = SDL_GetWindows(&count);
+    REQUIRE(count == 1);
+    SDL_SetWindowSize(windows[0], 800, 500);
+    SDL_SyncWindow(windows[0]); // wait until the window system applied it
+    SDL_free(windows);
+
+    // The swapchain notices via VK_ERROR_OUT_OF_DATE on acquire; give it a
+    // few frames to propagate.
+    Screenshot after = uiFrame();
+    for (int i = 0; i < 5 && after.size.x != 800; ++i) after = uiFrame();
+    REQUIRE(after.size == IVec2{800, 500});
+    // The 100%-wide bar follows the new width edge to edge.
+    REQUIRE(closeTo(at(after, 790, 30), 0xA6, 0xE3, 0xA1));
+    REQUIRE(closeTo(at(after, 790, 100), 0x00, 0x00, 0x00)); // below the bar
 }
 
 TEST_CASE("3d renders a lit cube", "[gpu]") {
