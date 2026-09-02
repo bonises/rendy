@@ -177,10 +177,11 @@ MeshHandle MeshStore::add(const MeshData& data) {
         const uint32_t id = freeRangeIds_.back();
         freeRangeIds_.pop_back();
         ranges_[id] = range;
-        return MeshHandle{id};
+        return MeshHandle{id, generations_[id]};
     }
     ranges_.push_back(range);
-    return MeshHandle{static_cast<uint32_t>(ranges_.size() - 1)};
+    generations_.push_back(0);
+    return MeshHandle{static_cast<uint32_t>(ranges_.size() - 1), 0};
 }
 
 void MeshStore::destroy(MeshHandle handle) {
@@ -192,6 +193,7 @@ void MeshStore::destroy(MeshHandle handle) {
     // the rare destroy-a-morphed-mesh case.
     range = {};
     range.alive = false;
+    ++generations_[handle.id]; // a reused slot never matches the old handle
     freeRangeIds_.push_back(handle.id);
 }
 

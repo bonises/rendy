@@ -328,10 +328,7 @@ struct ContextImpl {
 
         bool changed = false;
         bool submitted = false;
-        if (!input.text().empty()) {
-            edit::insert(&state, input.text());
-            changed = true;
-        }
+        if (!input.text().empty()) changed |= edit::insert(&state, input.text());
         if (input.keyPressed(Key::Backspace)) changed |= edit::eraseBackward(&state, input.ctrl());
         if (input.keyPressed(Key::Delete)) changed |= edit::eraseForward(&state, input.ctrl());
         if (input.keyPressed(Key::Left)) {

@@ -47,6 +47,12 @@ TEST_CASE("parses a transition list with ms, delay and defaults", "[css][transit
     REQUIRE(specs[1].prop == Prop::Width);
     REQUIRE(specs[1].duration == Approx(0.3f));
     REQUIRE(specs[1].timing == Timing::Ease); // default
+
+    // CSS allows a negative delay (starts partway through) but not a
+    // negative duration.
+    const auto negDelay = parseTransition("opacity 0.2s -50ms");
+    REQUIRE(negDelay.size() == 1);
+    REQUIRE(negDelay[0].delay == Approx(-0.05f));
 }
 
 TEST_CASE("transition 'all' and 'none'", "[css][transition]") {
@@ -68,8 +74,10 @@ TEST_CASE("transition 'all' and 'none'", "[css][transition]") {
 }
 
 TEST_CASE("invalid transitions are rejected", "[css][transition]") {
-    // Unknown property and missing duration both fall to "unsupported".
-    for (const char* bad : {"flex-direction 0.2s", "background-color", "0.2s 0.3s 0.4s"}) {
+    // Unknown property, missing duration, a third time value and a negative
+    // duration all fall to "unsupported".
+    for (const char* bad : {"flex-direction 0.2s", "background-color", "0.2s 0.3s 0.4s",
+                            "opacity -0.2s"}) {
         auto result = parse(fmt::format("x {{ transition: {}; }}", bad));
         REQUIRE(result.hasValue());
         for (const Rule& rule : result.value().rules)

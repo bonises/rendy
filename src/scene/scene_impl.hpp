@@ -9,6 +9,7 @@
 #include "rendy/scene/material.hpp"
 #include "rendy/scene/scene.hpp"
 
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -83,6 +84,14 @@ struct ReflectionProbeData {
 };
 
 struct SceneImpl {
+    // Unique, never-reused identity: lets the renderer tell scenes apart
+    // without comparing possibly-recycled pointers (probe-array ownership).
+    static uint64_t nextSceneId() {
+        static std::atomic<uint64_t> counter{0};
+        return ++counter;
+    }
+    const uint64_t sceneId = nextSceneId();
+
     AppImpl* app = nullptr;
     std::unique_ptr<MeshStore> meshes;
     std::vector<SceneNode> nodes;

@@ -93,7 +93,8 @@ stacking works with zero boilerplate.
 `addChild("input", ...)` creates a single-line text field. Clicking focuses
 it; typing edits with full UTF-8, mouse-drag/shift-arrow selection,
 ctrl+arrow word jumps, ctrl+A, Home/End, ctrl+Backspace, a blinking caret
-and horizontal scrolling when the text overflows. Style it like any element
+and horizontal scrolling when the text overflows. Line breaks in
+pasted/IME text are stripped (it stays single-line). Style it like any element
 (give it a `width`; use `:focus` for the focus ring):
 
 ```cpp

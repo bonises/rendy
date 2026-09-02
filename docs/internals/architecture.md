@@ -142,13 +142,20 @@ mtime change (debug builds).
   `mesh.frag` picks the strongest edge-fade probe, parallax-corrects the
   reflection ray against the box, and blends over the global specular.
   The BRDF LUT is baked for real at renderer startup so probes work
-  without an HDRI.
+  without an HDRI. The cube array is app-global but its content belongs to
+  the scene that baked last (`SceneImpl::sceneId` vs
+  `Renderer3D::probeOwnerScene_`) — other scenes render with zero probes
+  until they bake, so scene A never samples scene B's capture.
 - **glTF extensions**: KHR_draco_mesh_compression decodes through google
   draco into the normal MeshData path (draco reorders vertices — morph
   targets on draco primitives are skipped); KHR_texture_basisu transcodes
   KTX2 (ETC1S/UASTC, zstd supercompression) to BC7 with the basis
   transcoder and uploads pre-built mip chains via
-  `TexturePool::createCompressed`.
+  `TexturePool::createCompressed`. BC compression is optional in Vulkan:
+  the feature is enabled at device creation only when present
+  (`Context::supportsBcTextures()`), the transcoder falls back to RGBA32
+  without it, and `createCompressed` validates format support and returns
+  a `Result` error instead of aborting on importer data.
 - **Post**: HDR RGBA16F 4×MSAA → resolve (registered bindlessly) → tonemap
   fullscreen triangle (Khronos PBR Neutral / ACES / off + exposure) into the
   swapchain.
@@ -183,8 +190,9 @@ thread wakes every ~30 ms and tops up a lock-free SPSC ring (32768 frames ≈
 0.68 s) per stream — decoding, resampling (fractional cursor over a small
 pending window) and channel mixing off the audio thread. The callback only
 consumes ring frames; decode-level looping and play()-requested rewinds
-happen in the feeder (ring resets under the SDL stream lock). One playing
-voice per stream.
+happen in the feeder (ring resets under the SDL stream lock). While a
+rewind is pending the callback plays silence instead of the previous
+playback's buffered tail. One playing voice per stream.
 
 ## Conventions worth keeping
 

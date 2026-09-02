@@ -43,13 +43,15 @@ public:
     MeshStore& operator=(const MeshStore&) = delete;
 
     MeshHandle add(const MeshData& data);
-    /// Frees the mesh's vertex/index space for reuse and retires the handle
-    /// (its id slot is recycled by a later add — don't keep dead handles).
+    /// Frees the mesh's vertex/index space for reuse and retires the handle.
+    /// Its id slot is recycled by a later add, but the generation bumps, so
+    /// a kept stale handle can never alias the new mesh.
     /// GPU-safe mid-flight: the space is only rewritten by later uploads on
     /// the same queue.
     void destroy(MeshHandle handle);
     [[nodiscard]] bool valid(MeshHandle handle) const {
-        return handle.id < ranges_.size() && ranges_[handle.id].alive;
+        return handle.id < ranges_.size() && ranges_[handle.id].alive &&
+               generations_[handle.id] == handle.generation;
     }
     [[nodiscard]] const MeshRange& range(MeshHandle handle) const {
         return ranges_[handle.id];
@@ -78,6 +80,7 @@ private:
     BlockAllocator indexAlloc_;  // units: indices
     uint32_t morphEntryCount_ = 0;
     std::vector<MeshRange> ranges_;
+    std::vector<uint32_t> generations_; // parallel to ranges_
     std::vector<uint32_t> freeRangeIds_;
 };
 

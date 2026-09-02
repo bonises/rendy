@@ -201,6 +201,14 @@ Result<std::unique_ptr<Context>> Context::create(const ContextConfig& config) {
     features2.features.independentBlend = VK_TRUE;
     features2.features.imageCubeArray = VK_TRUE; // point light shadow cubes
 
+    // BC (S3TC/BC7) texture compression is optional in Vulkan — enable it
+    // when the device has it (all desktop GPUs); KTX2 transcoding falls back
+    // to RGBA32 otherwise.
+    VkPhysicalDeviceFeatures supported{};
+    vkGetPhysicalDeviceFeatures(ctx->physicalDevice_, &supported);
+    ctx->bcTexturesSupported_ = supported.textureCompressionBC == VK_TRUE;
+    features2.features.textureCompressionBC = supported.textureCompressionBC;
+
     const char* deviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
     VkDeviceCreateInfo deviceInfo{};

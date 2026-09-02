@@ -76,8 +76,9 @@ public:
 
     MeshHandle createMesh(const MeshData& data);
     /// Frees a mesh's GPU space for reuse by later createMesh/addMesh calls.
-    /// Nodes still using it lose their mesh (with a warning). The handle
-    /// becomes inert but its id is recycled — drop it after this call.
+    /// Nodes still using it lose their mesh (with a warning). The handle —
+    /// and any copy of it — becomes permanently inert (generation-checked),
+    /// even after its id slot is recycled.
     void destroyMesh(MeshHandle mesh);
     MaterialHandle createMaterial(const MaterialDesc& desc);
     /// Plain white-ish default material (id 0).
@@ -127,7 +128,9 @@ public:
     /// Captures every probe: renders the scene (opaque + skybox, no
     /// transparents) from each probe position and GGX-prefilters the result.
     /// Blocking GPU work — call after scene setup, or again when static
-    /// geometry/lighting changes.
+    /// geometry/lighting changes. The probe cubemap storage is app-global:
+    /// the most recently baked Scene owns it, and other scenes' probes stay
+    /// inactive until those scenes bake again.
     void bakeReflectionProbes();
 
     /// Loads a .gltf/.glb file as a child hierarchy. Returns the root node.

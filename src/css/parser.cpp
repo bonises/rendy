@@ -666,6 +666,8 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
             for (; i < v.size() && !v[i].is(TokenType::Comma); ++i) {
                 if (auto s = seconds(v[i])) {
                     if (!haveDuration) {
+                        if (*s < 0.0f) return false; // CSS: negative duration is
+                                                     // invalid (negative delay is fine)
                         spec.duration = *s;
                         haveDuration = true;
                     } else if (!haveDelay) {

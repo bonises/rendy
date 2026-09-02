@@ -38,6 +38,10 @@ public:
 
     const VkPhysicalDeviceProperties& properties() const { return properties_; }
 
+    /// BC/S3TC compressed textures usable? (Optional in Vulkan; enabled at
+    /// device creation when available.)
+    bool supportsBcTextures() const { return bcTexturesSupported_; }
+
     void waitIdle() const { vkDeviceWaitIdle(device_); }
 
 private:
@@ -52,6 +56,7 @@ private:
     uint32_t graphicsFamily_ = 0;
     VkQueue graphicsQueue_ = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties_{};
+    bool bcTexturesSupported_ = false;
 };
 
 } // namespace rendy::gpu

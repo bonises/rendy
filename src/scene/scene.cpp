@@ -58,7 +58,8 @@ void Scene::destroyMesh(MeshHandle mesh) {
     if (!impl_->meshes->valid(mesh)) return;
     uint32_t orphaned = 0;
     for (auto& node : impl_->nodes) {
-        if (node.alive && node.mesh.id == mesh.id && node.mesh.valid()) {
+        if (node.alive && node.mesh.valid() && node.mesh.id == mesh.id &&
+            node.mesh.generation == mesh.generation) {
             node.mesh = {};
             ++orphaned;
         }

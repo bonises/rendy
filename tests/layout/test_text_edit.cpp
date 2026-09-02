@@ -31,6 +31,21 @@ TEST_CASE("insert replaces the selection", "[ui][edit]") {
     REQUIRE_FALSE(s.hasSelection());
 }
 
+TEST_CASE("insert strips line breaks (single-line field)", "[ui][edit]") {
+    State s;
+    REQUIRE(insert(&s, "one\ntwo\r\nthree"));
+    REQUIRE(s.text == "onetwothree");
+    REQUIRE(s.cursor == 11);
+    // Pure line breaks with no selection change nothing.
+    REQUIRE_FALSE(insert(&s, "\r\n\n"));
+    REQUIRE(s.text == "onetwothree");
+    // ...but still erase a selection (paste-over semantics).
+    s.anchor = 0;
+    s.cursor = 3;
+    REQUIRE(insert(&s, "\n"));
+    REQUIRE(s.text == "twothree");
+}
+
 TEST_CASE("backspace and delete", "[ui][edit]") {
     State s;
     insert(&s, "aä");

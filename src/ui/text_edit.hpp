@@ -69,12 +69,20 @@ inline void eraseSelection(State* s) {
     s->cursor = s->anchor = s->selBegin();
 }
 
-/// Insert typed text at the caret (replacing any selection).
-inline void insert(State* s, std::string_view utf8) {
+/// Insert typed text at the caret (replacing any selection). Line breaks
+/// are stripped — the field is single-line, and pasted/IME text can carry
+/// \r or \n. Returns true when the text changed.
+inline bool insert(State* s, std::string_view utf8) {
+    std::string filtered;
+    filtered.reserve(utf8.size());
+    for (char c : utf8)
+        if (c != '\n' && c != '\r') filtered += c;
+    if (filtered.empty() && !s->hasSelection()) return false;
     eraseSelection(s);
-    s->text.insert(s->cursor, utf8);
-    s->cursor += utf8.size();
+    s->text.insert(s->cursor, filtered);
+    s->cursor += filtered.size();
     s->anchor = s->cursor;
+    return true;
 }
 
 /// Backspace. Returns true when the text changed.

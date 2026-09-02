@@ -54,7 +54,9 @@ struct GltfLoader {
     // Primitive scene nodes awaiting a skin (sceneNodeIndex, gltfSkinIndex).
     std::vector<std::pair<uint32_t, size_t>> pendingSkins;
 
-    /// KTX2 (KHR_texture_basisu) → BC7 with the full mip chain transcoded.
+    /// KTX2 (KHR_texture_basisu) with the full mip chain transcoded — to BC7
+    /// where the device supports BC compression (all desktop GPUs), else to
+    /// plain RGBA32 (BC7 is optional in Vulkan).
     TextureRef createFromKtx2(const uint8_t* bytes, size_t size, bool srgb) {
         std::call_once(basisInitFlag, [] { basist::basisu_transcoder_init(); });
         basist::ktx2_transcoder transcoder;
@@ -63,14 +65,20 @@ struct GltfLoader {
             log::warn("gltf: failed to parse KTX2 texture");
             return {};
         }
+        const bool bc7 = scene.app->gpu->supportsBcTextures();
+        if (!bc7)
+            log::debug("gltf: no BC texture support — KTX2 transcodes to RGBA32");
+        const auto target = bc7 ? basist::transcoder_texture_format::cTFBC7_RGBA
+                                : basist::transcoder_texture_format::cTFRGBA32;
         std::vector<std::vector<uint8_t>> mipData;
         for (uint32_t level = 0; level < transcoder.get_levels(); ++level) {
             basist::ktx2_image_level_info info{};
             if (!transcoder.get_image_level_info(info, level, 0, 0)) return {};
-            std::vector<uint8_t> data(static_cast<size_t>(info.m_total_blocks) * 16);
-            if (!transcoder.transcode_image_level(
-                    level, 0, 0, data.data(), info.m_total_blocks,
-                    basist::transcoder_texture_format::cTFBC7_RGBA)) {
+            // The output unit is blocks for BC7 and pixels for RGBA32.
+            const uint32_t units =
+                bc7 ? info.m_total_blocks : info.m_orig_width * info.m_orig_height;
+            std::vector<uint8_t> data(static_cast<size_t>(units) * (bc7 ? 16 : 4));
+            if (!transcoder.transcode_image_level(level, 0, 0, data.data(), units, target)) {
                 log::warn("gltf: KTX2 transcode failed at mip {}", level);
                 return {};
             }
@@ -83,10 +91,14 @@ struct GltfLoader {
         options.srgb = srgb;
         options.mipmaps = mips.size() > 1;
         options.wrap = TextureOptions::Wrap::Repeat;
+        const VkFormat format =
+            bc7 ? (srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK)
+                : (srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
         auto created = scene.app->textures->createCompressed(
             mips,
             {static_cast<int>(transcoder.get_width()), static_cast<int>(transcoder.get_height())},
-            srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK, options);
+            format, options);
+        if (!created) log::warn("gltf: KTX2 upload failed: {}", created.error().message);
         return created ? created.value() : TextureRef{};
     }
 

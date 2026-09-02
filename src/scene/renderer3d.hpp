@@ -135,6 +135,9 @@ private:
         VkImageView arrayView = VK_NULL_HANDLE; // samplerCubeArray view
     };
     ProbeArray probeArray_;
+    // The array is app-global but its CONTENT belongs to whichever scene
+    // baked last — probes from other scenes stay inactive until re-baked.
+    uint64_t probeOwnerScene_ = 0;
 
     // Shadow map storage (fixed size, created up front).
     struct ShadowArray {

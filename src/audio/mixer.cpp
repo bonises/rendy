@@ -73,6 +73,7 @@ struct Stream {
     std::vector<float> pending;
     double cursor = 0.0;
     std::vector<float> decodeBuf;
+    bool tailPadded = false; ///< last source frame duplicated at non-loop EOF
 
     ~Stream() {
         if (vorbis != nullptr) stb_vorbis_close(vorbis);
@@ -145,6 +146,7 @@ struct MixerImpl {
             stb_vorbis_seek_start(st.vorbis);
             st.pending.clear();
             st.cursor = 0.0;
+            st.tailPadded = false;
             st.ended.store(false, std::memory_order_relaxed);
             // Empty the ring without racing the callback.
             StreamLock streamLock(stream);
@@ -169,6 +171,15 @@ struct MixerImpl {
                 if (got <= 0) {
                     if (st.loop.load(std::memory_order_relaxed)) {
                         stb_vorbis_seek_start(st.vorbis);
+                        continue;
+                    }
+                    // The linear resampler needs two source frames; duplicate
+                    // the last one once so the final real frame gets played.
+                    if (!st.tailPadded && st.pending.size() >= kChannels) {
+                        st.tailPadded = true;
+                        const size_t last = st.pending.size() - kChannels;
+                        for (int c = 0; c < kChannels; ++c)
+                            st.pending.push_back(st.pending[last + static_cast<size_t>(c)]);
                         continue;
                     }
                     st.ended.store(true, std::memory_order_release);
@@ -267,6 +278,10 @@ struct MixerImpl {
                 // Streamed: consume the feeder's ring; underruns play
                 // silence but keep the voice alive until the decode ends.
                 Stream& st = *sound->stream;
+                // A pending restart means the ring still holds the previous
+                // playback's tail — play silence until the feeder has rewound
+                // instead of up to ~0.7 s of stale audio.
+                if (st.restart.load(std::memory_order_acquire)) continue;
                 size_t read = st.readPos.load(std::memory_order_relaxed);
                 const size_t write = st.writePos.load(std::memory_order_acquire);
                 const size_t available = write - read;

@@ -117,6 +117,16 @@ Result<TextureRef> TexturePool::createCompressed(const std::vector<CompressedMip
     if (mips.empty()) return err("texture: no mip data");
     if (size.x <= 0 || size.y <= 0 || size.x > 16384 || size.y > 16384)
         return err("texture: invalid size {}x{}", size.x, size.y);
+    // Compressed formats are optional in Vulkan — fail as a Result instead
+    // of letting image creation abort on imported data.
+    VkFormatProperties formatProps{};
+    vkGetPhysicalDeviceFormatProperties(ctx_.physicalDevice(), format, &formatProps);
+    constexpr VkFormatFeatureFlags kNeeded = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                             VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                             VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((formatProps.optimalTilingFeatures & kNeeded) != kNeeded)
+        return err("texture: format {} not sampleable on this device",
+                   static_cast<int>(format));
     const auto width = static_cast<uint32_t>(size.x);
     const auto height = static_cast<uint32_t>(size.y);
     const auto mipLevels = static_cast<uint32_t>(mips.size());

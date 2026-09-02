@@ -955,9 +955,13 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
 
     // Reflection probes: slot i in the UBO owns cube array layers i*6..i*6+5,
     // so slots keep their index for the probe's lifetime (freed slots are
-    // reused by addReflectionProbe).
+    // reused by addReflectionProbe). The cube array holds ONE scene's bake —
+    // a scene that isn't the current owner gets no probes (its stale `baked`
+    // flags would otherwise sample another scene's capture).
     const uint32_t probeCount =
-        std::min(static_cast<uint32_t>(scene.probes.size()), kMaxProbes);
+        scene.sceneId == probeOwnerScene_
+            ? std::min(static_cast<uint32_t>(scene.probes.size()), kMaxProbes)
+            : 0u;
     ubo.pointShadowParams.z = static_cast<float>(probeCount);
     ubo.pointShadowParams.w = static_cast<float>(kProbeMips - 1);
     for (uint32_t p = 0; p < probeCount; ++p) {
@@ -1568,6 +1572,11 @@ void Renderer3D::bakeProbes(SceneImpl& scene) {
     for (uint32_t i = 0; i < scene.probes.size() && i < kMaxProbes; ++i)
         if (scene.probes[i].alive) slots.push_back(i);
     if (slots.empty()) return;
+
+    if (probeOwnerScene_ != 0 && probeOwnerScene_ != scene.sceneId)
+        log::debug("bakeReflectionProbes: probe array taken over by another scene — "
+                   "the previous scene's probes deactivate until it re-bakes");
+    probeOwnerScene_ = scene.sceneId;
 
     // Blocking one-shot work: nothing may be in flight while we reuse the
     // shadow arrays and rewrite the probe array.
