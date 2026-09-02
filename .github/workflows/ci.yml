@@ -29,6 +29,11 @@ jobs:
     env:
       CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
       CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+      # Soundless runners: SDL's ALSA probing is slow (~10s timeouts per
+      # audio test) and leaks inside dlclosed libasound — which LSan then
+      # reports as <unknown module>, unmatched by symbol suppressions. The
+      # dummy backend is fast, clean, and fully functional for the tests.
+      SDL_AUDIO_DRIVER: dummy
 
     steps:
       - uses: actions/checkout@v4

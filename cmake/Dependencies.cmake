@@ -39,6 +39,10 @@ FetchContent_Declare(SDL3
   SYSTEM EXCLUDE_FROM_ALL)
 
 # ------------------------------------------------- Vulkan-Headers v1.3.296
+# The C++20 module target auto-enables on new-enough compilers (clang 16+)
+# but requires the Ninja generator — hard configure error under Makefiles.
+# We consume the C headers only.
+set(VULKAN_HEADERS_ENABLE_MODULE OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(VulkanHeaders
   GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers
   GIT_TAG 1d9bcc9af77d93ba355b15994b9f82a130e9df3a # v1.3.296
