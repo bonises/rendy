@@ -210,9 +210,47 @@ TEST_CASE("per-keyframe timing functions parse and ease their own segment",
     const float easedIn = 1.0f - ui::anim::sampleTrack(tracks[0], 0.25f, Timing::Linear).x;
     REQUIRE(easedIn < 0.35f);
     REQUIRE(ui::anim::sampleTrack(tracks[0], 0.75f, Timing::Linear).x == Approx(0.5f));
+
+    // A list inside a keyframe uses its first value (keyframes are shared
+    // by every animation referencing them).
+    auto listResult = parse(R"(
+        @keyframes slide {
+            from { opacity: 1; animation-timing-function: ease-out, linear; }
+        }
+    )");
+    REQUIRE(listResult.hasValue());
+    REQUIRE(listResult.value().keyframes[0].frames[0].hasTiming);
+    REQUIRE(listResult.value().keyframes[0].frames[0].timing == Timing::EaseOut);
 }
 
-TEST_CASE("animation-timing-function on a rule overrides animation timings",
+TEST_CASE("reverse direction reverses the perceived easing", "[css][animation]") {
+    // css-animations-1: a reversed ease-in must LOOK like ease-out. That
+    // is emergent in this pipeline (as in Web Animations): reverse maps
+    // time t to directed progress p = 1-t and the forward easing samples
+    // at p, so the distance traveled from the reverse start is
+    // 1 - ease(EaseIn, 1-t) — the easing mirrored in BOTH axes. For
+    // ease-in, cubic-bezier(0.42,0,1,1), that mirror is exactly ease-out,
+    // cubic-bezier(0,0,0.58,1). No extra flip belongs in sampleTrack: it
+    // would mirror only the value axis and keep the ease-in feel.
+    AnimationSpec spec;
+    spec.duration = 1.0f;
+    spec.direction = AnimDirection::Reverse;
+
+    ui::anim::Track track;
+    track.prop = Prop::Opacity;
+    track.keys = {{0.0f, Vec4{0.0f, 0.0f, 0.0f, 0.0f}, false, Timing::Ease},
+                  {1.0f, Vec4{1.0f, 0.0f, 0.0f, 0.0f}, false, Timing::Ease}};
+
+    for (const float t : {0.1f, 0.25f, 0.5f, 0.75f, 0.9f}) {
+        const auto s = ui::anim::sampleTimeline(spec, t);
+        REQUIRE(s.progress == Approx(1.0f - t));
+        const float value = ui::anim::sampleTrack(track, s.progress, Timing::EaseIn).x;
+        const float traveled = 1.0f - value; // from the reverse start (1 → 0)
+        REQUIRE(traveled == Approx(ui::anim::ease(Timing::EaseOut, t)).margin(1e-4));
+    }
+}
+
+TEST_CASE("animation-timing-function on a rule coordinates with the animation list",
           "[css][animation]") {
     auto result = parse(R"(
         x { animation: pulse 1s ease; animation-timing-function: linear; }
@@ -223,8 +261,24 @@ TEST_CASE("animation-timing-function on a rule overrides animation timings",
     REQUIRE(style.animations.size() == 1);
     REQUIRE(style.animations[0].timing == Timing::Linear);
 
-    // Invalid values are rejected (unknown ident, multiple tokens).
-    for (const char* bad : {"bouncy", "ease linear"}) {
+    // List form: value i goes to animation i, repeating cyclically when
+    // the list is shorter (CSS's coordinated list rules).
+    auto list = parse(R"(
+        x { animation: a 1s, b 1s, c 1s;
+            animation-timing-function: linear, ease-in; }
+    )");
+    REQUIRE(list.hasValue());
+    ComputedStyle coordinated;
+    for (const auto& d : list.value().rules[0].declarations)
+        applyDeclaration(d, &coordinated);
+    REQUIRE(coordinated.animations.size() == 3);
+    REQUIRE(coordinated.animations[0].timing == Timing::Linear);
+    REQUIRE(coordinated.animations[1].timing == Timing::EaseIn);
+    REQUIRE(coordinated.animations[2].timing == Timing::Linear); // wraps
+
+    // Invalid values are rejected (unknown ident, missing comma, trailing
+    // comma, empty list slot).
+    for (const char* bad : {"bouncy", "ease linear", "ease,", "ease,,linear"}) {
         auto r = parse(fmt::format("x {{ animation-timing-function: {}; }}", bad));
         REQUIRE(r.hasValue());
         REQUIRE_FALSE(r.value().unsupported.empty());

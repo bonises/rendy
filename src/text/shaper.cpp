@@ -38,13 +38,16 @@ Result<uint32_t> Shaper::loadFont(const std::string& path) {
 
 namespace {
 
-/// UAX#9 embedding levels for one line via SheenBidi (levels come back per
-/// UTF-8 byte), collapsed into maximal same-level runs in logical order.
-/// The base direction is auto-detected from the first strong character
-/// (LTR when there is none). HarfBuzz needs the split anyway: one
+/// UAX#9 runs in visual (left-to-right screen) order via SheenBidi. The
+/// base direction is auto-detected from the first strong character (LTR
+/// when there is none). shape() receives one drawn line at a time, so
+/// each paragraph is treated as a single SBLine — that runs rules L1–L2:
+/// L1 resets trailing whitespace and segment separators to the base level
+/// (visible with explicit embedding controls like RLE/PDF), L2 hands the
+/// runs back already reordered. HarfBuzz needs the split anyway: one
 /// direction per buffer, and an RTL run's glyphs come back visually
 /// ordered within the run.
-void splitLevelRuns(std::string_view utf8, std::vector<Shaper::LevelRun>* runs) {
+void visualRuns(std::string_view utf8, std::vector<Shaper::LevelRun>* runs) {
     runs->clear();
     const SBCodepointSequence sequence{SBStringEncodingUTF8, utf8.data(), utf8.size()};
     SBAlgorithmRef algorithm = SBAlgorithmCreate(&sequence);
@@ -54,48 +57,30 @@ void splitLevelRuns(std::string_view utf8, std::vector<Shaper::LevelRun>* runs) 
     }
     size_t offset = 0;
     while (offset < utf8.size()) {
-        // One paragraph per call; a line rarely holds separators (shape()
-        // takes single lines) but U+2029 etc. would end one early.
+        // One paragraph per iteration; a line rarely holds separators
+        // (shape() takes single lines) but U+2029 etc. would end one early.
         SBParagraphRef paragraph = SBAlgorithmCreateParagraph(
             algorithm, offset, utf8.size() - offset, SBLevelDefaultLTR);
         if (paragraph == nullptr) break;
         const SBUInteger length = SBParagraphGetLength(paragraph);
-        const SBLevel* levels = SBParagraphGetLevelsPtr(paragraph);
-        for (SBUInteger i = 0; i < length; ++i) {
-            const size_t at = offset + i;
-            if (!runs->empty() && runs->back().end == at && runs->back().level == levels[i])
-                runs->back().end = at + 1;
-            else
-                runs->push_back({at, at + 1, levels[i]});
+        if (length == 0) {
+            SBParagraphRelease(paragraph);
+            break;
+        }
+        if (SBLineRef line = SBParagraphCreateLine(paragraph, offset, length)) {
+            const SBUInteger runCount = SBLineGetRunCount(line);
+            const SBRun* lineRuns = SBLineGetRunsPtr(line);
+            for (SBUInteger i = 0; i < runCount; ++i)
+                runs->push_back({lineRuns[i].offset,
+                                 lineRuns[i].offset + lineRuns[i].length,
+                                 lineRuns[i].level});
+            SBLineRelease(line);
         }
         SBParagraphRelease(paragraph);
-        if (length == 0) break;
         offset += length;
     }
     SBAlgorithmRelease(algorithm);
     if (runs->empty() && !utf8.empty()) runs->push_back({0, utf8.size(), 0});
-}
-
-/// UAX#9 rule L2: from the highest level down to the lowest odd level,
-/// reverse every maximal contiguous subsequence of runs at or above it.
-/// Afterwards the runs are in visual (left-to-right screen) order.
-void reorderVisual(std::vector<Shaper::LevelRun>* runs) {
-    uint8_t maxLevel = 0;
-    uint8_t minOdd = 255;
-    for (const Shaper::LevelRun& run : *runs) {
-        maxLevel = std::max(maxLevel, run.level);
-        if ((run.level & 1) != 0) minOdd = std::min(minOdd, run.level);
-    }
-    for (uint8_t level = maxLevel; level >= minOdd; --level) {
-        for (size_t i = 0; i < runs->size(); ++i) {
-            if ((*runs)[i].level < level) continue;
-            size_t j = i;
-            while (j + 1 < runs->size() && (*runs)[j + 1].level >= level) ++j;
-            std::reverse(runs->begin() + static_cast<ptrdiff_t>(i),
-                         runs->begin() + static_cast<ptrdiff_t>(j) + 1);
-            i = j;
-        }
-    }
 }
 
 } // namespace
@@ -112,8 +97,7 @@ bool Shaper::shape(uint32_t fontId, float pixelSize, std::string_view utf8,
         static_cast<int>(std::lround(std::clamp(pixelSize, 1.0f, 512.0f) * 64.0f));
     hb_font_set_scale(font.font, scale, scale);
 
-    splitLevelRuns(utf8, &runs_);
-    reorderVisual(&runs_);
+    visualRuns(utf8, &runs_);
     for (const LevelRun& run : runs_) {
         const bool rtl = (run.level & 1) != 0;
         const hb_direction_t direction = rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR;

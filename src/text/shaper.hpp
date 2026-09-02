@@ -5,11 +5,12 @@
 // reordering). Uses hb-ot font functions on the raw font file — FreeType
 // stays the rasterizer, so this class is GPU-free and unit-testable.
 //
-// Full bidi (UAX#9): SheenBidi computes embedding levels per line (base
-// direction auto-detected from the first strong character, LTR default),
-// each level run shapes through HarfBuzz in its own direction, and rule L2
-// reorders the runs so the output glyph stream is in visual order.
-// Script is guessed per run (hb_buffer_guess_segment_properties).
+// Full bidi (UAX#9): SheenBidi resolves each line (base direction
+// auto-detected from the first strong character, LTR default) and its
+// SBLine applies rules L1–L2, handing back level runs in visual order;
+// each run shapes through HarfBuzz in its own direction, so the output
+// glyph stream is in visual order. Script is guessed per run
+// (hb_buffer_guess_segment_properties).
 
 #include "rendy/core/result.hpp"
 

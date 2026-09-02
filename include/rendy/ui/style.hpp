@@ -207,8 +207,23 @@ public:
     /// Inside a keyframe Style (Context::addKeyframes): the easing for the
     /// segment *starting* at that keyframe, like CSS
     /// `animation-timing-function` in a `@keyframes` block. On a regular
-    /// element style it overrides the timing of every `animation()` entry.
-    Style& animationTiming(Timing v) { return keyword(Prop::AnimationTiming, static_cast<uint8_t>(v)); }
+    /// element style it applies per `animation()` entry in call order,
+    /// repeating cyclically (CSS's coordinated list) — call it once to
+    /// override every animation's timing.
+    Style& animationTiming(Timing v) {
+        AnimationSpec spec;
+        spec.timing = v;
+        for (Declaration& d : declarations_) {
+            if (d.prop == Prop::AnimationTiming) {
+                d.value.animations.push_back(std::move(spec));
+                return *this;
+            }
+        }
+        Declaration d{Prop::AnimationTiming, {}};
+        d.value.animations.push_back(std::move(spec));
+        declarations_.push_back(std::move(d));
+        return *this;
+    }
 
     [[nodiscard]] const std::vector<Declaration>& declarations() const { return declarations_; }
 

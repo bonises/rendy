@@ -111,8 +111,12 @@ Typed API: `ui.addKeyframes("pulse", {{0.0f, Style{}.opacity(1)}, {0.5f,
 Style{}.opacity(0.25f)}})` + `Style{}.animation("pulse", 1.4f,
 Timing::EaseInOut, 0.0f, INFINITY)`; per-keyframe easing is
 `Style{}.animationTiming(Timing::EaseIn)` on the keyframe's Style. On a
-regular element/rule, `animation-timing-function` (or `.animationTiming()`)
-overrides the timing of every animation declared before it.
+regular element/rule, `animation-timing-function` is list-valued and
+coordinates with the animation list per CSS — value *i* applies to
+animation *i*, repeating cyclically when the list is shorter (so a single
+value overrides them all); `.animationTiming()` appends to that list per
+call. Inside a keyframe block a list collapses to its first value (the
+keyframes are shared by every animation referencing them).
 
 Unknown properties log one warning and are ignored — a stylesheet never
 fails to load because of them. Text inside elements word-wraps to the

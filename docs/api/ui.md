@@ -46,8 +46,10 @@ repeatable; `Prop::Count` means "all animatable" (see the UI guide) — and
 AnimDirection = Normal, fillForwards = false)` referencing `addKeyframes`
 or a CSS `@keyframes` (iterations may be `INFINITY`), and
 `animationTiming(Timing)` — in a keyframe's Style: the easing for the
-segment starting there; on an element style: overrides every animation's
-timing (CSS `animation-timing-function`).
+segment starting there; on an element style: CSS's coordinated
+`animation-timing-function` list (one entry per call, applied to the
+matching animation index, repeating cyclically — call once to override
+every animation's timing).
 
 Enums: `Display{Flex,None}`, `FlexDirection{Row,Column,RowReverse,ColumnReverse}`,
 `FlexWrap{NoWrap,Wrap,WrapReverse}`, `Justify{FlexStart,FlexEnd,Center,

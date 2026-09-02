@@ -212,8 +212,10 @@ private:
             ui::Timing timing = ui::Timing::Ease;
             std::erase_if(scratch.declarations, [&](const Declaration& d) {
                 if (d.prop != Prop::AnimationTiming) return false;
-                hasTiming = true;
-                timing = static_cast<ui::Timing>(d.value.keyword);
+                if (!d.value.animations.empty()) {
+                    hasTiming = true;
+                    timing = d.value.animations.front().timing;
+                }
                 return true;
             });
             for (float offset : offsets) {
@@ -834,13 +836,31 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
         return true;
     }
     if (name == "animation-timing-function") {
-        // Inside a `@keyframes` block: the easing for the segment starting
-        // at that keyframe. On a regular rule: overrides the timing of
-        // every animation on the element.
-        if (v.size() != 1 || !v[0].is(TokenType::Ident)) return false;
-        auto timing = timingFromIdent(v[0].value);
-        if (!timing) return false;
-        emitKeyword(rule, Prop::AnimationTiming, static_cast<uint8_t>(*timing));
+        // List-valued per CSS (`<easing-function>#`), coordinated with the
+        // element's animation list: value i applies to animation i, the
+        // list repeating cyclically when it is shorter. Inside a
+        // `@keyframes` block only the first value is used (the keyframes
+        // are shared by every animation referencing them) and it eases the
+        // segment starting at that keyframe. Carried as timing-only
+        // AnimationSpec entries.
+        Declaration d{Prop::AnimationTiming, {}};
+        size_t i = 0;
+        while (i < v.size()) {
+            if (!v[i].is(TokenType::Ident)) return false;
+            const auto timing = timingFromIdent(v[i].value);
+            if (!timing) return false;
+            ui::AnimationSpec spec;
+            spec.timing = *timing;
+            d.value.animations.push_back(spec);
+            ++i;
+            if (i < v.size()) {
+                if (!v[i].is(TokenType::Comma)) return false;
+                ++i;
+                if (i >= v.size()) return false; // trailing comma
+            }
+        }
+        if (d.value.animations.empty()) return false;
+        rule->declarations.push_back(std::move(d));
         return true;
     }
     if (name == "animation") {

@@ -128,3 +128,42 @@ TEST_CASE("full bidi reorders runs in an RTL-base paragraph", "[text][shaper]") 
     REQUIRE(glyphs[2].cluster == 11);
     REQUIRE(glyphs.back().cluster == 0);
 }
+
+TEST_CASE("bidi rule L1: trailing whitespace resets to the base level",
+          "[text][shaper]") {
+    const char* fontPath = dejaVu();
+    if (fontPath == nullptr) {
+        SUCCEED("no system DejaVu font — skipping");
+        return;
+    }
+    Shaper shaper;
+    const uint32_t id = shaper.loadFont(fontPath).value();
+    std::vector<ShapedGlyph> glyphs;
+
+    // LTR base ending in an RTL run + trailing spaces (clusters 12, 13):
+    // the spaces stay at the line's right end, after the Arabic block.
+    REQUIRE(shaper.shape(id, 16.0f, "hej سلام  ", &glyphs));
+    REQUIRE(glyphs.size() >= 8);
+    REQUIRE(glyphs[glyphs.size() - 2].cluster == 12);
+    REQUIRE(glyphs.back().cluster == 13);
+
+    // RTL base with a trailing space (cluster 12): base level puts it at
+    // the line's *left* end — first in the visual stream.
+    REQUIRE(shaper.shape(id, 16.0f, "سلام abc ", &glyphs));
+    REQUIRE(glyphs.front().cluster == 12);
+
+    // The case only L1 gets right: inside an explicit RLE…PDF embedding
+    // ("abc ‫سلام ‬"), the space before the terminator (cluster
+    // 15) carries the embedding's RTL level through the implicit rules —
+    // L1 resets it to the base level at end of line, so it renders after
+    // the Arabic block instead of to the left of it.
+    REQUIRE(shaper.shape(id, 16.0f, "abc ‫سلام ‬", &glyphs));
+    size_t spaceAt = glyphs.size();
+    size_t lastArabic = 0;
+    for (size_t i = 0; i < glyphs.size(); ++i) {
+        if (glyphs[i].cluster == 15) spaceAt = i;
+        if (glyphs[i].cluster >= 7 && glyphs[i].cluster <= 14) lastArabic = i;
+    }
+    REQUIRE(spaceAt < glyphs.size()); // the space glyph exists
+    REQUIRE(spaceAt > lastArabic);
+}

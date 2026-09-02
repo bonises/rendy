@@ -125,11 +125,14 @@ void applyDeclaration(const Declaration& d, ComputedStyle* s) {
     case Prop::Transition: s->transitions = d.value.transitions; break;
     case Prop::Animation: s->animations = d.value.animations; break;
     case Prop::AnimationTiming:
-        // Longhand on an element: overrides the timing of every animation
-        // declared so far (inside @keyframes it never reaches the cascade —
-        // the parser lifts it into Keyframe::timing).
-        for (ui::AnimationSpec& animation : s->animations)
-            animation.timing = static_cast<ui::Timing>(d.value.keyword);
+        // Longhand on an element (a coordinated CSS list): timing i goes to
+        // animation i, repeating cyclically when the list is shorter.
+        // Inside @keyframes it never reaches the cascade — the parser
+        // lifts it into Keyframe::timing.
+        if (!d.value.animations.empty())
+            for (size_t i = 0; i < s->animations.size(); ++i)
+                s->animations[i].timing =
+                    d.value.animations[i % d.value.animations.size()].timing;
         break;
     case Prop::FontSize:
         // em resolves against the *inherited* size (already in s->fontSize).

@@ -1083,8 +1083,10 @@ void Context::addKeyframes(std::string_view name,
         // not an animated property — lift it out, like the CSS parser does.
         std::erase_if(frame.declarations, [&](const Declaration& d) {
             if (d.prop != Prop::AnimationTiming) return false;
-            frame.hasTiming = true;
-            frame.timing = static_cast<Timing>(d.value.keyword);
+            if (!d.value.animations.empty()) {
+                frame.hasTiming = true;
+                frame.timing = d.value.animations.front().timing;
+            }
             return true;
         });
         compiled.push_back(std::move(frame));
