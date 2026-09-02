@@ -21,6 +21,7 @@ struct LightData {
 
 const uint MAX_CASCADES = 4u;
 const uint MAX_SPOT_SHADOWS = 8u;
+const uint MAX_REFLECTION_PROBES = 8u;
 
 layout(set = 1, binding = 0) uniform FrameData {
     mat4 view;
@@ -33,8 +34,11 @@ layout(set = 1, binding = 0) uniform FrameData {
     vec4 viewPos;       // xyz camera position
     vec4 ambient;       // rgb flat ambient, w = environment intensity
     uvec4 counts;       // x = light count, y = cascades, z = has env, w = directional count
-    vec4 pointShadowParams; // x = point shadow near plane, y = prefiltered env max mip
+    vec4 pointShadowParams; // x = point shadow near, y = env max mip, z = probe count, w = probe max mip
     vec4 clusterParams;     // x,y = tile size px, z = z-slice scale, w = z-slice bias
+    vec4 probePositions[MAX_REFLECTION_PROBES]; // xyz capture pos, w = 1 when active
+    vec4 probeBoxMins[MAX_REFLECTION_PROBES];   // xyz box min, w = edge fade distance
+    vec4 probeBoxMaxs[MAX_REFLECTION_PROBES];   // xyz box max
 } frame;
 
 layout(std430, set = 1, binding = 1) readonly buffer Transforms { mat4 transforms[]; };

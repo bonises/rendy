@@ -188,6 +188,44 @@ void Scene::clearEnvironment() {
     }
 }
 
+// ------------------------------------------------------- reflection probes
+
+ReflectionProbe Scene::addReflectionProbe(const ReflectionProbeDesc& desc) {
+    if (glm::any(glm::greaterThanEqual(desc.boxMin, desc.boxMax))) {
+        log::warn("Scene::addReflectionProbe: boxMin must be < boxMax on every axis");
+        return {};
+    }
+    detail::ReflectionProbeData data;
+    data.position = desc.position;
+    data.boxMin = desc.boxMin;
+    data.boxMax = desc.boxMax;
+    data.fade = std::max(desc.fade, 0.0f);
+    data.alive = true;
+    data.baked = false;
+    // Slots map 1:1 to cube array layers — reuse freed ones.
+    for (uint32_t i = 0; i < impl_->probes.size(); ++i) {
+        if (!impl_->probes[i].alive) {
+            impl_->probes[i] = data;
+            return {i};
+        }
+    }
+    if (impl_->probes.size() >= detail::Renderer3D::kMaxProbes) {
+        log::warn("Scene::addReflectionProbe: probe cap ({}) reached",
+                  detail::Renderer3D::kMaxProbes);
+        return {};
+    }
+    impl_->probes.push_back(data);
+    return {static_cast<uint32_t>(impl_->probes.size() - 1)};
+}
+
+void Scene::removeReflectionProbe(ReflectionProbe probe) {
+    if (!probe.valid() || probe.index >= impl_->probes.size()) return;
+    impl_->probes[probe.index].alive = false;
+    impl_->probes[probe.index].baked = false;
+}
+
+void Scene::bakeReflectionProbes() { impl_->app->renderer3d->bakeProbes(*impl_); }
+
 // Scene::loadGltf lives in gltf.cpp.
 
 // --------------------------------------------------------------- animation

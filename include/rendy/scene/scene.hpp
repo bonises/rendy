@@ -28,6 +28,23 @@ struct NodeId {
     [[nodiscard]] bool valid() const { return index != UINT32_MAX; }
 };
 
+/// Handle for a local reflection probe (see Scene::addReflectionProbe).
+struct ReflectionProbe {
+    uint32_t index = UINT32_MAX;
+    [[nodiscard]] bool valid() const { return index != UINT32_MAX; }
+};
+
+/// A local reflection probe: the scene is captured from `position` into a
+/// cubemap, and surfaces inside [boxMin, boxMax] use it for specular
+/// reflections with parallax correction against the box (great for rooms —
+/// reflections stick to the walls instead of floating at infinity).
+struct ReflectionProbeDesc {
+    Vec3 position{0.0f};    ///< capture point (typically the box center)
+    Vec3 boxMin{-1.0f};     ///< world-space influence/projection box
+    Vec3 boxMax{1.0f};
+    float fade = 0.5f;      ///< edge fade toward the global environment, world units
+};
+
 class Scene;
 
 /// Convenience proxy: `scene.node(id).rotateY(dt)`.
@@ -97,6 +114,17 @@ public:
     void setEnvironmentIntensity(float intensity);
     /// Back to flat ambient + no skybox.
     void clearEnvironment();
+
+    /// Adds a local reflection probe (max 8 per scene). Probes contribute
+    /// nothing until bakeReflectionProbes() captures them. Returns an
+    /// invalid handle when the cap is reached or the box is degenerate.
+    ReflectionProbe addReflectionProbe(const ReflectionProbeDesc& desc);
+    void removeReflectionProbe(ReflectionProbe probe);
+    /// Captures every probe: renders the scene (opaque + skybox, no
+    /// transparents) from each probe position and GGX-prefilters the result.
+    /// Blocking GPU work — call after scene setup, or again when static
+    /// geometry/lighting changes.
+    void bakeReflectionProbes();
 
     /// Loads a .gltf/.glb file as a child hierarchy. Returns the root node.
     /// Imports meshes, PBR materials, textures, skins and animations.

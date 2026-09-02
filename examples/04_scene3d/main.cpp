@@ -139,6 +139,34 @@ int main(int argc, char** argv) {
     scene.node(spot).setPosition({0.0f, 5.0f, 0.0f});
     (void)sun;
 
+    // Reflection probe showcase: a mirror sphere inside a colored alcove.
+    // The probe captures the walls, so the sphere reflects them (parallax-
+    // corrected) instead of just the sky/ambient.
+    {
+        auto wallRed = scene.createMaterial(
+            {.baseColor = Color::rgb(0xC0392B), .roughness = 0.85f});
+        auto wallTeal = scene.createMaterial(
+            {.baseColor = Color::rgb(0x16A085), .roughness = 0.85f});
+        auto wallCream = scene.createMaterial(
+            {.baseColor = Color::rgb(0xECF0F1), .roughness = 0.85f});
+        const Vec3 roomCenter{7.0f, 1.5f, -3.0f};
+        scene.addMesh(primitives::cube({3.2f, 3.0f, 0.2f}), wallCream,
+                      Transform{.position = roomCenter + Vec3{0.0f, 0.0f, -1.6f}});
+        scene.addMesh(primitives::cube({0.2f, 3.0f, 3.4f}), wallRed,
+                      Transform{.position = roomCenter + Vec3{-1.6f, 0.0f, 0.1f}});
+        scene.addMesh(primitives::cube({0.2f, 3.0f, 3.4f}), wallTeal,
+                      Transform{.position = roomCenter + Vec3{1.6f, 0.0f, 0.1f}});
+        auto mirror = scene.createMaterial(
+            {.baseColor = Color::rgb(0xF5F5F5), .metallic = 1.0f, .roughness = 0.04f});
+        scene.addMesh(primitives::sphere(0.8f), mirror,
+                      Transform{.position = roomCenter + Vec3{0.0f, -0.7f, 0.4f}});
+        scene.addReflectionProbe({.position = roomCenter,
+                                  .boxMin = roomCenter - Vec3{1.7f, 1.6f, 1.8f},
+                                  .boxMax = roomCenter + Vec3{1.7f, 1.6f, 2.2f},
+                                  .fade = 0.4f});
+    }
+    scene.bakeReflectionProbes();
+
     Camera camera;
     float orbitAngle = 0.6f;
     float orbitHeight = 3.0f;

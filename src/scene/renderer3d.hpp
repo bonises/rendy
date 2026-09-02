@@ -47,6 +47,14 @@ public:
     static constexpr uint32_t kClusterCount = kClusterX * kClusterY * kClusterZ;
     static constexpr uint32_t kMaxSpotShadows = 8;
     static constexpr uint32_t kMaxPointShadows = 4;
+    static constexpr uint32_t kMaxProbes = 8;   // reflection probes
+    static constexpr uint32_t kProbeSize = 128; // per-face resolution
+    static constexpr uint32_t kProbeMips = 5;   // GGX-prefiltered chain
+
+    /// Renders the scene from every alive reflection probe's position into
+    /// the probe cube array and GGX-prefilters the result. Blocking one-shot
+    /// GPU work (waitIdle + a few submits); call from Scene::bakeReflectionProbes.
+    void bakeProbes(SceneImpl& scene);
 
 private:
     struct MappedBuffer {
@@ -86,6 +94,7 @@ private:
     VkDescriptorSetLayout frameSetLayout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     VkDescriptorSet frameSets_[gpu::kFramesInFlight]{};
+    VkDescriptorSet bakeSet_ = VK_NULL_HANDLE; ///< probe-bake frame set
     bool descriptorsDirty_[gpu::kFramesInFlight]{};
 
     VkPipelineLayout meshLayout_ = VK_NULL_HANDLE;
@@ -95,6 +104,11 @@ private:
     VkPipeline tonemapPipeline_ = VK_NULL_HANDLE;
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
     VkPipeline skyboxPipeline_ = VK_NULL_HANDLE;
+    // Probe-bake variants: single-sampled, and (mesh) with flipped front
+    // face — cube faces render without the main pass's y-flipped projection,
+    // which mirrors the framebuffer winding.
+    VkPipeline meshProbePipeline_ = VK_NULL_HANDLE;
+    VkPipeline skyboxProbePipeline_ = VK_NULL_HANDLE;
     VkFormat swapchainFormat_ = VK_FORMAT_UNDEFINED;
     gpu::ShaderBlob meshVertBlob_, meshFragBlob_, tonemapVertBlob_, tonemapFragBlob_,
         shadowVertBlob_, skyboxVertBlob_, skyboxFragBlob_;
@@ -112,6 +126,15 @@ private:
     };
     DefaultEnv defaultEnv_;
     const EnvironmentData* boundEnvironment_ = nullptr;
+
+    // Reflection probe cube array (kMaxProbes cubes, kProbeMips prefiltered
+    // mips). Created black up front so binding 16 is always valid.
+    struct ProbeArray {
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VkImageView arrayView = VK_NULL_HANDLE; // samplerCubeArray view
+    };
+    ProbeArray probeArray_;
 
     // Shadow map storage (fixed size, created up front).
     struct ShadowArray {

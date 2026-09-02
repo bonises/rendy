@@ -23,6 +23,9 @@ see the [3D guide](../guides/3d.md) for concepts.
 | `setAmbient` | `void setAmbient(Color)` | flat ambient (no environment) |
 | `setEnvironment` | `Result<void> setEnvironment(hdrPath, float intensity = 1)` | skybox + IBL from an equirect .hdr |
 | `setEnvironmentIntensity` / `clearEnvironment` | | |
+| `addReflectionProbe` | `ReflectionProbe addReflectionProbe(const ReflectionProbeDesc&)` | local parallax-corrected reflections (max 8) |
+| `removeReflectionProbe` | `void removeReflectionProbe(ReflectionProbe)` | |
+| `bakeReflectionProbes` | `void bakeReflectionProbes()` | blocking capture + GGX prefilter of every probe |
 | `loadGltf` | `Result<NodeId> loadGltf(path)` | .gltf/.glb → root node (incl. skins + animations) |
 | `animationNames` | `std::vector<std::string> animationNames() const` | loaded clips |
 | `findAnimation` | `AnimationHandle findAnimation(std::string_view) const` | |

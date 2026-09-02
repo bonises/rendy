@@ -1,5 +1,10 @@
 #include "scene/renderer3d.hpp"
 
+#include "scene/env_baker.hpp"
+
+#include "shaders/env_bake_vert_spv.h"
+#include "shaders/env_brdf_lut_frag_spv.h"
+#include "shaders/env_prefilter_frag_spv.h"
 #include "shaders/mesh_frag_spv.h"
 #include "shaders/mesh_vert_spv.h"
 #include "shaders/shadow_vert_spv.h"
@@ -29,6 +34,9 @@ struct FrameUbo {
     glm::uvec4 counts;
     Vec4 pointShadowParams;
     Vec4 clusterParams; // tileW, tileH, sliceScale, sliceBias
+    Vec4 probePositions[Renderer3D::kMaxProbes]; // xyz pos, w = active
+    Vec4 probeBoxMins[Renderer3D::kMaxProbes];   // xyz min, w = fade
+    Vec4 probeBoxMaxs[Renderer3D::kMaxProbes];   // xyz max
 };
 
 constexpr uint32_t kNoJoints = 0xFFFFFFFFu;
@@ -104,8 +112,9 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
                        gpu::Uploader& uploader, VkFormat swapchainFormat)
     : ctx_(ctx), bindless_(bindless) {
     // Set 1: UBO + transforms/materials/lights/joints + 3 shadow map arrays
-    // + environment cubes (8,9,10) + BRDF LUT (11) + morph deltas/weights.
-    VkDescriptorSetLayoutBinding bindings[16]{};
+    // + environment cubes (8,9,10) + BRDF LUT (11) + morph deltas/weights
+    // + forward+ clusters (14,15) + reflection probe cube array (16).
+    VkDescriptorSetLayoutBinding bindings[17]{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     for (uint32_t i = 1; i < 4; ++i)
@@ -125,26 +134,29 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     for (uint32_t i = 14; i < 16; ++i) // forward+ cluster data
         bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
                        nullptr};
+    bindings[16] = {16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 16;
+    layoutInfo.bindingCount = 17;
     layoutInfo.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(ctx_.device(), &layoutInfo, nullptr, &frameSetLayout_));
 
+    // One set per frame in flight + one for the blocking probe bake.
     VkDescriptorPoolSize poolSizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, gpu::kFramesInFlight},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 * gpu::kFramesInFlight},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 * gpu::kFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, gpu::kFramesInFlight + 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 * (gpu::kFramesInFlight + 1)},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * (gpu::kFramesInFlight + 1)},
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = gpu::kFramesInFlight;
+    poolInfo.maxSets = gpu::kFramesInFlight + 1;
     poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
     VK_CHECK(vkCreateDescriptorPool(ctx_.device(), &poolInfo, nullptr, &descriptorPool_));
 
-    VkDescriptorSetLayout layouts[gpu::kFramesInFlight];
+    VkDescriptorSetLayout layouts[gpu::kFramesInFlight + 1];
     for (auto& layout : layouts) layout = frameSetLayout_;
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -152,6 +164,8 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
     allocInfo.descriptorSetCount = gpu::kFramesInFlight;
     allocInfo.pSetLayouts = layouts;
     VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, frameSets_));
+    allocInfo.descriptorSetCount = 1;
+    VK_CHECK(vkAllocateDescriptorSets(ctx_.device(), &allocInfo, &bakeSet_));
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -194,12 +208,24 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
         allocCreate.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         VK_CHECK(vmaCreateImage(ctx_.allocator(), &cubeInfo, &allocCreate, &defaultEnv_.cube,
                                 &defaultEnv_.cubeAllocation, nullptr));
+        // The BRDF LUT is environment-independent — bake a real one up front
+        // so reflection probes have correct specular even without an HDRI.
         VkImageCreateInfo lutInfo = cubeInfo;
         lutInfo.flags = 0;
         lutInfo.format = VK_FORMAT_R16G16_SFLOAT;
+        lutInfo.extent = {kBrdfLutSize, kBrdfLutSize, 1};
         lutInfo.arrayLayers = 1;
+        lutInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         VK_CHECK(vmaCreateImage(ctx_.allocator(), &lutInfo, &allocCreate, &defaultEnv_.lut,
                                 &defaultEnv_.lutAllocation, nullptr));
+
+        VkImageCreateInfo probeInfo = cubeInfo;
+        probeInfo.extent = {kProbeSize, kProbeSize, 1};
+        probeInfo.mipLevels = kProbeMips;
+        probeInfo.arrayLayers = kMaxProbes * 6;
+        probeInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        VK_CHECK(vmaCreateImage(ctx_.allocator(), &probeInfo, &allocCreate, &probeArray_.image,
+                                &probeArray_.allocation, nullptr));
 
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -213,6 +239,12 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
         viewInfo.format = VK_FORMAT_R16G16_SFLOAT;
         viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &defaultEnv_.lutView));
+        viewInfo.image = probeArray_.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+        viewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kProbeMips, 0,
+                                     kMaxProbes * 6};
+        VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &probeArray_.arrayView));
 
         VkSamplerCreateInfo defSampler{};
         defSampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -225,17 +257,18 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
         defSampler.maxLod = VK_LOD_CLAMP_NONE;
         VK_CHECK(vkCreateSampler(ctx_.device(), &defSampler, nullptr, &defaultEnv_.sampler));
 
-        // Clear both to black and move to SHADER_READ.
+        // Clear cube + probe array to black and move to SHADER_READ.
         const uint8_t zero = 0;
         uploader.submit(&zero, 1, [&](VkCommandBuffer cmd, VkBuffer) {
-            for (VkImage image : {defaultEnv_.cube, defaultEnv_.lut}) {
+            for (VkImage image : {defaultEnv_.cube, probeArray_.image}) {
                 gpu::imageBarrier(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED,
                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                                   VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
                 const VkClearColorValue black{{0.0f, 0.0f, 0.0f, 1.0f}};
-                const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                                    VK_REMAINING_MIP_LEVELS, 0,
                                                     VK_REMAINING_ARRAY_LAYERS};
                 vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black,
                                      1, &range);
@@ -247,6 +280,20 @@ Renderer3D::Renderer3D(gpu::Context& ctx, gpu::BindlessTable& bindless,
                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             }
         });
+
+        // Bake the split-sum BRDF LUT (one fullscreen pass, blocking).
+        EnvBaker lutBaker(ctx_, env_bake_vert_spv, env_bake_vert_spv_words);
+        VkPipeline lutPipeline = lutBaker.makePipeline(
+            env_brdf_lut_frag_spv, env_brdf_lut_frag_spv_words, VK_FORMAT_R16G16_SFLOAT);
+        lutBaker.begin();
+        envWholeImageBarrier(lutBaker.cmd, defaultEnv_.lut, VK_IMAGE_LAYOUT_UNDEFINED,
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        lutBaker.renderFace(lutPipeline, VK_NULL_HANDLE, defaultEnv_.lutView, kBrdfLutSize, 0,
+                            0.0f);
+        envWholeImageBarrier(lutBaker.cmd, defaultEnv_.lut,
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        lutBaker.submitAndWait();
     }
 
     swapchainFormat_ = swapchainFormat;
@@ -341,7 +388,8 @@ bool Renderer3D::reloadShader(std::string_view name, std::vector<uint32_t> spirv
     // cache, and keeps the reload path to a single code path.
     VkDevice device = ctx_.device();
     for (VkPipeline pipeline : {meshPipeline_, meshBlendPipeline_, tonemapPipeline_,
-                                shadowPipeline_, skyboxPipeline_}) {
+                                shadowPipeline_, skyboxPipeline_, meshProbePipeline_,
+                                skyboxProbePipeline_}) {
         frames.defer([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
     }
     createPipelines();
@@ -387,6 +435,10 @@ Renderer3D::~Renderer3D() {
     vmaDestroyImage(ctx_.allocator(), defaultEnv_.cube, defaultEnv_.cubeAllocation);
     vmaDestroyImage(ctx_.allocator(), defaultEnv_.lut, defaultEnv_.lutAllocation);
     vkDestroySampler(ctx_.device(), defaultEnv_.sampler, nullptr);
+    vkDestroyImageView(ctx_.device(), probeArray_.arrayView, nullptr);
+    vmaDestroyImage(ctx_.allocator(), probeArray_.image, probeArray_.allocation);
+    vkDestroyPipeline(ctx_.device(), meshProbePipeline_, nullptr);
+    vkDestroyPipeline(ctx_.device(), skyboxProbePipeline_, nullptr);
     vkDestroyPipeline(ctx_.device(), skyboxPipeline_, nullptr);
     vkDestroyPipeline(ctx_.device(), meshBlendPipeline_, nullptr);
     vkDestroyPipeline(ctx_.device(), meshPipeline_, nullptr);
@@ -522,6 +574,21 @@ void Renderer3D::createPipelines() {
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pRasterizationState = &raster;
 
+    // Probe-bake variant: single-sampled, CLOCKWISE front face. Probe faces
+    // render with the point-shadow cube matrices (no y-flip), which mirrors
+    // the framebuffer winding relative to the main pass.
+    VkPipelineMultisampleStateCreateInfo probeSample{};
+    probeSample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    probeSample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineRasterizationStateCreateInfo probeRaster = raster;
+    probeRaster.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    pipelineInfo.pMultisampleState = &probeSample;
+    pipelineInfo.pRasterizationState = &probeRaster;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo,
+                                       nullptr, &meshProbePipeline_));
+    pipelineInfo.pMultisampleState = &multisample;
+    pipelineInfo.pRasterizationState = &raster;
+
     vkDestroyShaderModule(ctx_.device(), meshVert, nullptr);
     vkDestroyShaderModule(ctx_.device(), meshFrag, nullptr);
 
@@ -640,6 +707,13 @@ void Renderer3D::createPipelines() {
     pipelineInfo.layout = meshLayout_;
     VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo,
                                        nullptr, &skyboxPipeline_));
+
+    // Single-sampled skybox for probe capture (CULL_NONE already; direction
+    // comes from invViewProj so no winding concerns).
+    pipelineInfo.pMultisampleState = &singleSample;
+    VK_CHECK(vkCreateGraphicsPipelines(ctx_.device(), ctx_.pipelineCache(), 1, &pipelineInfo,
+                                       nullptr, &skyboxProbePipeline_));
+
     vkDestroyShaderModule(ctx_.device(), skyboxVert, nullptr);
     vkDestroyShaderModule(ctx_.device(), skyboxFrag, nullptr);
 }
@@ -776,6 +850,8 @@ void Renderer3D::updateDescriptors(uint32_t slot) {
          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {11, envSampler, env ? env->brdfLutView : defaultEnv_.lutView,
          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {16, defaultEnv_.sampler, probeArray_.arrayView,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
 
     VkDescriptorBufferInfo bufferInfos[std::size(bufferBinds)];
@@ -876,6 +952,21 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
     }
     ubo.counts.z = boundEnvironment_ != nullptr ? 1u : 0u;
     ubo.pointShadowParams.y = static_cast<float>(kPrefilterMips - 1);
+
+    // Reflection probes: slot i in the UBO owns cube array layers i*6..i*6+5,
+    // so slots keep their index for the probe's lifetime (freed slots are
+    // reused by addReflectionProbe).
+    const uint32_t probeCount =
+        std::min(static_cast<uint32_t>(scene.probes.size()), kMaxProbes);
+    ubo.pointShadowParams.z = static_cast<float>(probeCount);
+    ubo.pointShadowParams.w = static_cast<float>(kProbeMips - 1);
+    for (uint32_t p = 0; p < probeCount; ++p) {
+        const ReflectionProbeData& probe = scene.probes[p];
+        ubo.probePositions[p] =
+            Vec4{probe.position, probe.alive && probe.baked ? 1.0f : 0.0f};
+        ubo.probeBoxMins[p] = Vec4{probe.boxMin, probe.fade};
+        ubo.probeBoxMaxs[p] = Vec4{probe.boxMax, 0.0f};
+    }
 
     const FrustumPlanes frustum(ubo.viewProj);
 
@@ -1470,6 +1561,489 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
                        sizeof(tonemapPush), &tonemapPush);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
+}
+
+void Renderer3D::bakeProbes(SceneImpl& scene) {
+    std::vector<uint32_t> slots;
+    for (uint32_t i = 0; i < scene.probes.size() && i < kMaxProbes; ++i)
+        if (scene.probes[i].alive) slots.push_back(i);
+    if (slots.empty()) return;
+
+    // Blocking one-shot work: nothing may be in flight while we reuse the
+    // shadow arrays and rewrite the probe array.
+    ctx_.waitIdle();
+    scene.updateWorldTransforms();
+
+    // ---- gather draws: every alive non-blend mesh node, individual draws
+    struct BakeDraw {
+        uint32_t transformIndex;
+        uint32_t materialIndex;
+        MeshHandle mesh;
+        uint32_t jointBase;
+        uint32_t morphWeightBase;
+        uint32_t morphTargetCount;
+    };
+    std::vector<Mat4> transforms;
+    std::vector<Mat4> jointMatrices;
+    std::vector<float> morphWeights;
+    std::vector<BakeDraw> draws;
+    std::map<int32_t, uint32_t> jointBaseOfSkin;
+    for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
+        const SceneNode& node = scene.nodes[i];
+        if (!node.alive || !node.mesh.valid()) continue;
+        if (node.material.id < scene.materialAlphaModes.size() &&
+            scene.materialAlphaModes[node.material.id] == AlphaMode::Blend)
+            continue; // transparent surfaces are skipped in probe captures
+        const MeshRange& range = scene.meshes->range(node.mesh);
+        const bool skinned = node.skinIndex >= 0 &&
+                             static_cast<size_t>(node.skinIndex) < scene.skins.size();
+        uint32_t jointBase = kNoJoints;
+        if (skinned) {
+            if (auto it = jointBaseOfSkin.find(node.skinIndex); it != jointBaseOfSkin.end()) {
+                jointBase = it->second;
+            } else {
+                const Skin& skin = scene.skins[static_cast<size_t>(node.skinIndex)];
+                jointBase = static_cast<uint32_t>(jointMatrices.size());
+                for (size_t j = 0; j < skin.jointNodes.size(); ++j) {
+                    const uint32_t jointNode = skin.jointNodes[j];
+                    const Mat4 world = jointNode < scene.nodes.size()
+                                           ? scene.nodes[jointNode].world
+                                           : Mat4{1.0f};
+                    jointMatrices.push_back(world * skin.inverseBind[j]);
+                }
+                jointBaseOfSkin.emplace(node.skinIndex, jointBase);
+            }
+        }
+        uint32_t morphWeightBase = 0;
+        if (range.morphTargetCount > 0) {
+            morphWeightBase = static_cast<uint32_t>(morphWeights.size());
+            for (uint32_t t = 0; t < range.morphTargetCount; ++t)
+                morphWeights.push_back(t < node.morphWeights.size() ? node.morphWeights[t]
+                                                                   : 0.0f);
+        }
+        draws.push_back({static_cast<uint32_t>(transforms.size()), node.material.id, node.mesh,
+                         jointBase, morphWeightBase, range.morphTargetCount});
+        transforms.push_back(node.world);
+    }
+
+    // ---- lights: everything shades, nothing samples shadow maps
+    std::vector<GpuLight> directionalLights;
+    std::vector<GpuLight> localLights;
+    for (size_t i = 0; i < scene.lights.size(); ++i) {
+        const Light& light = scene.lights[i];
+        const SceneNode& node = scene.nodes[scene.lightNodes[i]];
+        if (!node.alive) continue;
+        GpuLight gpuLight{};
+        const Vec3 worldPos = Vec3(node.world[3]) + light.position;
+        const Vec3 worldDir = glm::normalize(Mat3(node.world) * light.direction);
+        if (light.type == Light::Type::Directional)
+            gpuLight.positionType = Vec4{worldDir, 0.0f};
+        else
+            gpuLight.positionType =
+                Vec4{worldPos, light.type == Light::Type::Point ? 1.0f : 2.0f};
+        gpuLight.colorIntensity =
+            Vec4{light.color.r, light.color.g, light.color.b, light.intensity};
+        gpuLight.directionRange = Vec4{worldDir, light.range};
+        gpuLight.cone =
+            Vec4{std::cos(light.innerCone), std::cos(light.outerCone), -1.0f, 0.0f};
+        (light.type == Light::Type::Directional ? directionalLights : localLights)
+            .push_back(gpuLight);
+    }
+    std::vector<GpuLight> gpuLights = std::move(directionalLights);
+    const auto directionalCount = static_cast<uint32_t>(gpuLights.size());
+    gpuLights.insert(gpuLights.end(), localLights.begin(), localLights.end());
+
+    // Degenerate cluster grid: every fragment lands in cluster 0, which
+    // holds every local light (probe faces are 128² — brute force is fine).
+    std::vector<glm::uvec2> clusterRanges(kClusterCount, glm::uvec2{0, 0});
+    std::vector<uint32_t> clusterIndices;
+    for (uint32_t l = directionalCount; l < gpuLights.size(); ++l) clusterIndices.push_back(l);
+    clusterRanges[0] = {0, static_cast<uint32_t>(clusterIndices.size())};
+
+    // ---- host-visible bake buffers
+    struct BakeBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+    };
+    std::vector<BakeBuffer> bakeBuffers;
+    bakeBuffers.reserve(8); // the returned references must stay valid
+    auto createMapped = [&](const void* data, size_t bytes) -> BakeBuffer& {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = std::max<size_t>(bytes, 16);
+        bufferInfo.usage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        VmaAllocationCreateInfo allocCreate{};
+        allocCreate.usage = VMA_MEMORY_USAGE_AUTO;
+        allocCreate.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                            VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        allocCreate.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        VmaAllocationInfo allocInfo{};
+        BakeBuffer buffer;
+        VK_CHECK(vmaCreateBuffer(ctx_.allocator(), &bufferInfo, &allocCreate, &buffer.buffer,
+                                 &buffer.allocation, &allocInfo));
+        buffer.mapped = allocInfo.pMappedData;
+        if (data != nullptr && bytes > 0) std::memcpy(buffer.mapped, data, bytes);
+        bakeBuffers.push_back(buffer);
+        return bakeBuffers.back();
+    };
+
+    BakeBuffer& uboBuffer = createMapped(nullptr, sizeof(FrameUbo));
+    BakeBuffer& transformBuffer =
+        createMapped(transforms.data(), transforms.size() * sizeof(Mat4));
+    BakeBuffer& materialBuffer =
+        createMapped(scene.materials.data(), scene.materials.size() * sizeof(GpuMaterial));
+    BakeBuffer& lightBuffer = createMapped(gpuLights.data(), gpuLights.size() * sizeof(GpuLight));
+    BakeBuffer& jointBuffer =
+        createMapped(jointMatrices.data(), jointMatrices.size() * sizeof(Mat4));
+    BakeBuffer& morphWeightBuffer =
+        createMapped(morphWeights.data(), morphWeights.size() * sizeof(float));
+    BakeBuffer& clusterBuffer =
+        createMapped(clusterRanges.data(), clusterRanges.size() * sizeof(glm::uvec2));
+    BakeBuffer& clusterIndexBuffer =
+        createMapped(clusterIndices.data(), clusterIndices.size() * sizeof(uint32_t));
+
+    // ---- bake descriptor set (mirrors updateDescriptors, bake-local buffers)
+    const EnvironmentData* env = scene.environment.get();
+    const VkSampler envSampler = env ? env->sampler : defaultEnv_.sampler;
+    {
+        const VkDescriptorBufferInfo bufferInfos[] = {
+            {uboBuffer.buffer, 0, sizeof(FrameUbo)},
+            {transformBuffer.buffer, 0, VK_WHOLE_SIZE},
+            {materialBuffer.buffer, 0, VK_WHOLE_SIZE},
+            {lightBuffer.buffer, 0, VK_WHOLE_SIZE},
+            {jointBuffer.buffer, 0, VK_WHOLE_SIZE},
+            {scene.meshes->morphDeltaBuffer(), 0, VK_WHOLE_SIZE},
+            {morphWeightBuffer.buffer, 0, VK_WHOLE_SIZE},
+            {clusterBuffer.buffer, 0, VK_WHOLE_SIZE},
+            {clusterIndexBuffer.buffer, 0, VK_WHOLE_SIZE},
+        };
+        const uint32_t bufferBindings[] = {0, 1, 2, 3, 7, 12, 13, 14, 15};
+        const VkDescriptorImageInfo imageInfos[] = {
+            {shadowSampler_, cascadeShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+            {shadowSampler_, spotShadows_.sampleView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+            {pointShadowSampler_, pointShadows_.sampleView,
+             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
+            {envSampler, env ? env->environment.view : defaultEnv_.cubeView,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {envSampler, env ? env->irradiance.view : defaultEnv_.cubeView,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {envSampler, env ? env->prefiltered.view : defaultEnv_.cubeView,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {envSampler, env ? env->brdfLutView : defaultEnv_.lutView,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {defaultEnv_.sampler, probeArray_.arrayView,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        };
+        const uint32_t imageBindings[] = {4, 5, 6, 8, 9, 10, 11, 16};
+        VkWriteDescriptorSet writes[std::size(bufferInfos) + std::size(imageInfos)]{};
+        uint32_t writeCount = 0;
+        for (size_t i = 0; i < std::size(bufferInfos); ++i) {
+            VkWriteDescriptorSet& write = writes[writeCount++];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = bakeSet_;
+            write.dstBinding = bufferBindings[i];
+            write.descriptorCount = 1;
+            write.descriptorType = bufferBindings[i] == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                                          : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &bufferInfos[i];
+        }
+        for (size_t i = 0; i < std::size(imageInfos); ++i) {
+            VkWriteDescriptorSet& write = writes[writeCount++];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = bakeSet_;
+            write.dstBinding = imageBindings[i];
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &imageInfos[i];
+        }
+        vkUpdateDescriptorSets(ctx_.device(), writeCount, writes, 0, nullptr);
+    }
+
+    // ---- scratch capture cube (mips for the prefilter's blurred taps) + depth
+    EnvironmentData::CubeImage capture;
+    {
+        VkImageCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = kHdrFormat;
+        info.extent = {kProbeSize, kProbeSize, 1};
+        info.mipLevels = kProbeMips;
+        info.arrayLayers = 6;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo allocCreate{};
+        allocCreate.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        VK_CHECK(vmaCreateImage(ctx_.allocator(), &info, &allocCreate, &capture.image,
+                                &capture.allocation, nullptr));
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = capture.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        viewInfo.format = kHdrFormat;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kProbeMips, 0, 6};
+        VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &capture.view));
+    }
+    Target scratchDepth;
+    {
+        VkImageCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = kDepthFormat;
+        info.extent = {kProbeSize, kProbeSize, 1};
+        info.mipLevels = 1;
+        info.arrayLayers = 1;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        VmaAllocationCreateInfo allocCreate{};
+        allocCreate.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        VK_CHECK(vmaCreateImage(ctx_.allocator(), &info, &allocCreate, &scratchDepth.image,
+                                &scratchDepth.allocation, nullptr));
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = scratchDepth.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = kDepthFormat;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        VK_CHECK(vkCreateImageView(ctx_.device(), &viewInfo, nullptr, &scratchDepth.view));
+    }
+
+    EnvBaker baker(ctx_, env_bake_vert_spv, env_bake_vert_spv_words);
+    VkPipeline prefilterPipeline = baker.makePipeline(
+        env_prefilter_frag_spv, env_prefilter_frag_spv_words, kHdrFormat);
+    VkDescriptorSet captureSet = baker.makeInputSet(capture.view, defaultEnv_.sampler);
+
+    // Cube face capture matrices — same convention as the point shadow cubes
+    // (glm::perspective without the main pass's y-flip; the probe pipelines
+    // compensate the mirrored winding with a CLOCKWISE front face).
+    const struct {
+        Vec3 dir;
+        Vec3 up;
+    } faces[6] = {
+        {{1, 0, 0}, {0, -1, 0}},  {{-1, 0, 0}, {0, -1, 0}}, {{0, 1, 0}, {0, 0, 1}},
+        {{0, -1, 0}, {0, 0, -1}}, {{0, 0, 1}, {0, -1, 0}},  {{0, 0, -1}, {0, -1, 0}},
+    };
+    const Mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.05f, 1000.0f);
+
+    bool firstSubmit = true;
+    for (uint32_t slot : slots) {
+        ReflectionProbeData& probe = scene.probes[slot];
+
+        // ---- capture: one blocking submit per face (the UBO is reused)
+        for (uint32_t face = 0; face < 6; ++face) {
+            FrameUbo ubo{};
+            ubo.view = glm::lookAt(probe.position, probe.position + faces[face].dir,
+                                   faces[face].up);
+            ubo.proj = proj;
+            ubo.viewProj = ubo.proj * ubo.view;
+            ubo.invViewProj = glm::inverse(ubo.viewProj);
+            ubo.viewPos = Vec4{probe.position, 1.0f};
+            ubo.ambient = Vec4{scene.ambient.r, scene.ambient.g, scene.ambient.b,
+                               scene.environmentIntensity};
+            ubo.counts = {static_cast<uint32_t>(gpuLights.size()), 0u,
+                          env != nullptr ? 1u : 0u, directionalCount};
+            ubo.pointShadowParams = {kPointShadowNear, static_cast<float>(kPrefilterMips - 1),
+                                     0.0f, static_cast<float>(kProbeMips - 1)};
+            // Degenerate grid: every fragment maps to cluster 0.
+            ubo.clusterParams = {1e9f, 1e9f, 0.0f, 0.0f};
+            std::memcpy(uboBuffer.mapped, &ubo, sizeof(FrameUbo));
+
+            baker.begin();
+            if (firstSubmit) {
+                firstSubmit = false;
+                if (!shadowsInSampleLayout_) {
+                    // Never rendered: move the (garbage, never sampled)
+                    // shadow arrays to the layout the descriptors declare.
+                    for (ShadowArray* array : {&cascadeShadows_, &spotShadows_, &pointShadows_})
+                        gpu::imageBarrier(baker.cmd, array->image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                          VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                          VK_IMAGE_ASPECT_DEPTH_BIT);
+                    shadowsInSampleLayout_ = true;
+                }
+            }
+            if (face == 0)
+                envWholeImageBarrier(baker.cmd, capture.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            gpu::imageBarrier(baker.cmd, scratchDepth.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                              VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                              VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                              VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                              VK_IMAGE_ASPECT_DEPTH_BIT);
+
+            VkRenderingAttachmentInfo colorAttachment{};
+            colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAttachment.imageView =
+                baker.faceView(capture.image, face, 0, kHdrFormat);
+            colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+            VkRenderingAttachmentInfo depthAttachment{};
+            depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAttachment.imageView = scratchDepth.view;
+            depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAttachment.clearValue.depthStencil = {1.0f, 0};
+            VkRenderingInfo renderingInfo{};
+            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            renderingInfo.renderArea = {{0, 0}, {kProbeSize, kProbeSize}};
+            renderingInfo.layerCount = 1;
+            renderingInfo.colorAttachmentCount = 1;
+            renderingInfo.pColorAttachments = &colorAttachment;
+            renderingInfo.pDepthAttachment = &depthAttachment;
+            vkCmdBeginRendering(baker.cmd, &renderingInfo);
+            const VkViewport viewport{0.0f, 0.0f, static_cast<float>(kProbeSize),
+                                      static_cast<float>(kProbeSize), 0.0f, 1.0f};
+            vkCmdSetViewport(baker.cmd, 0, 1, &viewport);
+            const VkRect2D scissor{{0, 0}, {kProbeSize, kProbeSize}};
+            vkCmdSetScissor(baker.cmd, 0, 1, &scissor);
+
+            const VkDescriptorSet sets[] = {bindless_.set(), bakeSet_};
+            vkCmdBindDescriptorSets(baker.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshLayout_, 0,
+                                    2, sets, 0, nullptr);
+            const VkDeviceSize zeroOffset = 0;
+            VkBuffer vertexBuffer = scene.meshes->vertexBuffer();
+            vkCmdBindVertexBuffers(baker.cmd, 0, 1, &vertexBuffer, &zeroOffset);
+            vkCmdBindIndexBuffer(baker.cmd, scene.meshes->indexBuffer(), 0,
+                                 VK_INDEX_TYPE_UINT32);
+            vkCmdBindPipeline(baker.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshProbePipeline_);
+            for (const BakeDraw& draw : draws) {
+                const MeshRange& range = scene.meshes->range(draw.mesh);
+                const MeshPush push{draw.transformIndex,
+                                    draw.materialIndex,
+                                    draw.jointBase,
+                                    draw.morphWeightBase,
+                                    range.morphDeltaBase,
+                                    draw.morphTargetCount,
+                                    static_cast<uint32_t>(range.vertexOffset),
+                                    range.vertexCount};
+                vkCmdPushConstants(baker.cmd, meshLayout_,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(push), &push);
+                vkCmdDrawIndexed(baker.cmd, range.indexCount, 1, range.firstIndex,
+                                 range.vertexOffset, 0);
+            }
+            if (env != nullptr) {
+                vkCmdBindPipeline(baker.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  skyboxProbePipeline_);
+                vkCmdDraw(baker.cmd, 3, 1, 0, 0);
+            }
+            vkCmdEndRendering(baker.cmd);
+            baker.submitAndWait();
+        }
+
+        // ---- mip chain + GGX prefilter into the probe's array layers
+        baker.begin();
+        envWholeImageBarrier(baker.cmd, capture.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        int32_t mipSize = static_cast<int32_t>(kProbeSize);
+        for (uint32_t mip = 1; mip < kProbeMips; ++mip) {
+            VkImageMemoryBarrier2 toSrc{};
+            toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            toSrc.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            toSrc.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            toSrc.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            toSrc.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toSrc.image = capture.image;
+            toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, 6};
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &toSrc;
+            vkCmdPipelineBarrier2(baker.cmd, &dep);
+
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 6};
+            blit.srcOffsets[1] = {mipSize, mipSize, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 6};
+            blit.dstOffsets[1] = {std::max(mipSize / 2, 1), std::max(mipSize / 2, 1), 1};
+            vkCmdBlitImage(baker.cmd, capture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           capture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                           VK_FILTER_LINEAR);
+            mipSize = std::max(mipSize / 2, 1);
+        }
+        {
+            // Mips [0, N-1) are TRANSFER_SRC, the last is TRANSFER_DST.
+            VkImageMemoryBarrier2 barriers[2]{};
+            for (auto& barrier : barriers) {
+                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                barrier.srcAccessMask =
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
+                barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.image = capture.image;
+            }
+            barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kProbeMips - 1, 0, 6};
+            barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, kProbeMips - 1, 1, 0, 6};
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 2;
+            dep.pImageMemoryBarriers = barriers;
+            vkCmdPipelineBarrier2(baker.cmd, &dep);
+        }
+
+        // This probe's 6 layers: SHADER_READ → COLOR_ATTACHMENT → prefilter
+        // → SHADER_READ.
+        auto probeLayersBarrier = [&](VkImageLayout oldLayout, VkImageLayout newLayout) {
+            VkImageMemoryBarrier2 barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+            barrier.oldLayout = oldLayout;
+            barrier.newLayout = newLayout;
+            barrier.image = probeArray_.image;
+            barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kProbeMips, slot * 6, 6};
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &barrier;
+            vkCmdPipelineBarrier2(baker.cmd, &dep);
+        };
+        probeLayersBarrier(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        for (uint32_t mip = 0; mip < kProbeMips; ++mip) {
+            const uint32_t size = kProbeSize >> mip;
+            const float roughness = static_cast<float>(mip) / (kProbeMips - 1);
+            for (uint32_t face = 0; face < 6; ++face)
+                baker.renderFace(prefilterPipeline, captureSet,
+                                 baker.faceView(probeArray_.image, slot * 6 + face, mip,
+                                                kHdrFormat),
+                                 size, face, roughness);
+        }
+        probeLayersBarrier(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        baker.submitAndWait();
+
+        probe.baked = true;
+    }
+
+    // All submits are fenced — safe to destroy the scratch resources now.
+    vkDestroyImageView(ctx_.device(), capture.view, nullptr);
+    vmaDestroyImage(ctx_.allocator(), capture.image, capture.allocation);
+    vkDestroyImageView(ctx_.device(), scratchDepth.view, nullptr);
+    vmaDestroyImage(ctx_.allocator(), scratchDepth.image, scratchDepth.allocation);
+    for (BakeBuffer& buffer : bakeBuffers)
+        vmaDestroyBuffer(ctx_.allocator(), buffer.buffer, buffer.allocation);
+
+    log::info("probes: baked {} reflection probe(s) ({} draws each, {}² × {} mips)",
+              slots.size(), draws.size(), kProbeSize, kProbeMips);
 }
 
 } // namespace rendy::detail

@@ -70,6 +70,18 @@ struct Skin {
     std::vector<Mat4> inverseBind;
 };
 
+// A local reflection probe: cube capture at `position`, box-projected
+// (parallax-corrected) inside [boxMin, boxMax], fading toward the global
+// environment over `fade` world units from the box edge.
+struct ReflectionProbeData {
+    Vec3 position{0.0f};
+    Vec3 boxMin{-1.0f};
+    Vec3 boxMax{1.0f};
+    float fade = 0.5f;
+    bool alive = false;
+    bool baked = false; ///< sampled only after bakeReflectionProbes()
+};
+
 struct SceneImpl {
     AppImpl* app = nullptr;
     std::unique_ptr<MeshStore> meshes;
@@ -82,6 +94,7 @@ struct SceneImpl {
     std::vector<Skin> skins;
     std::vector<TransformAccumulator> animationScratch; // per-node blend state
     std::shared_ptr<EnvironmentData> environment; // null = flat ambient
+    std::vector<ReflectionProbeData> probes;      // slot i ↔ cube array layer i*6
     float environmentIntensity = 1.0f;
     Color ambient{0.03f, 0.03f, 0.04f, 1.0f};
 

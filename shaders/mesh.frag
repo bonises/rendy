@@ -12,6 +12,7 @@ layout(set = 1, binding = 6) uniform samplerCubeArray pointShadowMaps;
 layout(set = 1, binding = 9) uniform samplerCube irradianceMap;
 layout(set = 1, binding = 10) uniform samplerCube prefilteredMap;
 layout(set = 1, binding = 11) uniform sampler2D brdfLut;
+layout(set = 1, binding = 16) uniform samplerCubeArray reflectionProbes;
 
 layout(push_constant) uniform PC {
     uint transformIndex;
@@ -236,20 +237,58 @@ void main() {
         SHADE_LIGHT(light);
     }
 
+    // ---- ambient: global IBL (or flat ambient) + local reflection probes
+    const vec3 reflected = reflect(-viewDir, shadingNormal);
+    const vec2 brdf = texture(brdfLut, vec2(NoV, roughness)).rg;
+    const vec3 specularScale = f0 * brdf.x + brdf.y;
+
     vec3 ambient;
+    vec3 baseSpecular = vec3(0.0); // what a probe replaces, weight-blended
     if (frame.counts.z == 1u) {
         // Image-based lighting: irradiance for diffuse, prefiltered + BRDF
         // LUT split-sum for specular.
-        const vec3 reflected = reflect(-viewDir, shadingNormal);
         const vec3 irradiance = texture(irradianceMap, shadingNormal).rgb;
         const vec3 prefiltered =
             textureLod(prefilteredMap, reflected, roughness * frame.pointShadowParams.y).rgb;
-        const vec2 brdf = texture(brdfLut, vec2(NoV, roughness)).rg;
-        const vec3 diffuseIbl = irradiance * diffuseColor;
-        const vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y);
-        ambient = (diffuseIbl + specularIbl) * occlusion * frame.ambient.w;
+        baseSpecular = prefiltered * specularScale * occlusion * frame.ambient.w;
+        ambient = irradiance * diffuseColor * occlusion * frame.ambient.w + baseSpecular;
     } else {
         ambient = frame.ambient.rgb * albedo * occlusion;
+    }
+
+    // Local reflection probes: pick the containing box with the strongest
+    // edge-fade weight, parallax-correct the reflection ray against the box,
+    // and blend the probe's prefiltered capture over the global specular.
+    const uint probeCount = uint(frame.pointShadowParams.z);
+    float probeWeight = 0.0;
+    uint probeIndex = 0u;
+    for (uint p = 0u; p < probeCount; ++p) {
+        if (frame.probePositions[p].w == 0.0) continue;
+        const vec3 boxMin = frame.probeBoxMins[p].xyz;
+        const vec3 boxMax = frame.probeBoxMaxs[p].xyz;
+        if (any(lessThan(vWorldPos, boxMin)) || any(greaterThan(vWorldPos, boxMax))) continue;
+        const float fade = max(frame.probeBoxMins[p].w, 1e-4);
+        const vec3 edge = min(vWorldPos - boxMin, boxMax - vWorldPos);
+        const float weight = clamp(min(edge.x, min(edge.y, edge.z)) / fade, 0.0, 1.0);
+        if (weight > probeWeight) {
+            probeWeight = weight;
+            probeIndex = p;
+        }
+    }
+    if (probeWeight > 0.0) {
+        const vec3 boxMin = frame.probeBoxMins[probeIndex].xyz;
+        const vec3 boxMax = frame.probeBoxMaxs[probeIndex].xyz;
+        // Guard against 0-components before the slab intersection (0 * inf = NaN).
+        const vec3 ray = mix(reflected, vec3(1e-5), vec3(lessThan(abs(reflected), vec3(1e-5))));
+        const vec3 invRay = 1.0 / ray;
+        const vec3 tMax = max((boxMin - vWorldPos) * invRay, (boxMax - vWorldPos) * invRay);
+        const float hit = max(min(min(tMax.x, tMax.y), tMax.z), 0.0);
+        const vec3 dir = (vWorldPos + ray * hit) - frame.probePositions[probeIndex].xyz;
+        const vec3 probeSpec =
+            textureLod(reflectionProbes, vec4(dir, float(probeIndex)),
+                       roughness * frame.pointShadowParams.w).rgb *
+            specularScale * occlusion;
+        ambient += probeWeight * (probeSpec - baseSpecular);
     }
     fragColor = vec4(radianceSum + ambient + emissive, baseColor.a);
 }
