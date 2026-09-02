@@ -1,0 +1,20 @@
+@PACKAGE_INIT@
+
+# rendy — self-contained static library (all dependencies bundled).
+# Usage: target_link_libraries(app PRIVATE rendy::rendy)
+
+set_and_check(_rendy_includedir "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+set_and_check(_rendy_lib "@PACKAGE_CMAKE_INSTALL_LIBDIR@/librendy.a")
+
+if(NOT TARGET rendy::rendy)
+  add_library(rendy::rendy STATIC IMPORTED)
+  set_target_properties(rendy::rendy PROPERTIES
+    IMPORTED_LOCATION "${_rendy_lib}"
+    INTERFACE_INCLUDE_DIRECTORIES "${_rendy_includedir}"
+    INTERFACE_COMPILE_FEATURES cxx_std_20
+    # The Vulkan loader is dlopened by volk and SDL loads its backends at
+    # runtime — only base system libs are needed at link time.
+    INTERFACE_LINK_LIBRARIES "m;pthread;dl")
+endif()
+
+check_required_components(rendy)

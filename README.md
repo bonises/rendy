@@ -59,6 +59,9 @@ cmake --build --preset release
 ```
 
 Run the test suite (CPU-only, no GPU needed) with `ctest --preset release`.
+Install with `cmake --install build/release --prefix <dir>` — you get a
+self-contained `librendy.a` (all dependencies bundled), headers, and a
+`find_package(rendy CONFIG)` package.
 CI builds every push with GCC and Clang across the `debug`, `release` and
 `asan` presets with warnings-as-errors
 ([workflow](.github/workflows/ci.yml)).

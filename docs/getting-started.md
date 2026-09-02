@@ -43,10 +43,20 @@ int main() {
 }
 ```
 
-Link against `rendy::rendy`:
+Link against `rendy::rendy` — either embedded:
 
 ```cmake
 add_subdirectory(path/to/rendy)
+target_link_libraries(my_app PRIVATE rendy::rendy)
+```
+
+…or installed. `cmake --install build/release --prefix ~/sdk/rendy` ships a
+**self-contained** static library (every dependency bundled into one
+`librendy.a`), the public headers (`rendy/`, plus `fmt/` and `glm/` — the
+two public dependencies) and a package config:
+
+```cmake
+find_package(rendy CONFIG REQUIRED)      # -DCMAKE_PREFIX_PATH=~/sdk/rendy
 target_link_libraries(my_app PRIVATE rendy::rendy)
 ```
 

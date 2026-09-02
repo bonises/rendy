@@ -10,6 +10,7 @@ option(RENDY_BUILD_EXAMPLES "Build the example apps" ON)
 option(RENDY_BUILD_TESTS "Build the unit tests" ON)
 option(RENDY_WERROR "Treat warnings as errors (CI)" OFF)
 option(RENDY_VULKAN_VALIDATION "Enable Vulkan validation layers by default" OFF)
+option(RENDY_INSTALL "Generate install rules (self-contained librendy.a + find_package config)" ${PROJECT_IS_TOP_LEVEL})
 option(RENDY_SHADER_HOT_RELOAD "Recompile shaders/ at runtime when files change (links glslang into rendy)" OFF)
 set(RENDY_SANITIZE "" CACHE STRING "Semicolon list of sanitizers, e.g. address;undefined")
 
@@ -108,4 +109,9 @@ endif()
 if(RENDY_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# ------------------------------------------------------------------ install
+if(RENDY_INSTALL)
+  include(cmake/Install.cmake)
 endif()

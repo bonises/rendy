@@ -17,7 +17,8 @@ Presets: `debug` (validation layers on), `release`, `asan`. Options:
 `RENDY_BUILD_EXAMPLES`, `RENDY_BUILD_TESTS`, `RENDY_WERROR`,
 `RENDY_VULKAN_VALIDATION`, `RENDY_SHADER_HOT_RELOAD` (ON in the debug
 preset: edit `shaders/*` while an app runs and pipelines rebuild live),
-`RENDY_SANITIZE`.
+`RENDY_SANITIZE`, `RENDY_INSTALL` (`cmake --install` ships a
+self-contained librendy.a + find_package config; cmake/Install.cmake).
 
 CI (`.github/workflows/ci.yml`) builds GCC + Clang × debug/release plus a
 GCC asan job, all with `RENDY_WERROR=ON` — keep the tree warning-clean
