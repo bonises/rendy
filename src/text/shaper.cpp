@@ -113,6 +113,7 @@ bool Shaper::shape(uint32_t fontId, float pixelSize, std::string_view utf8,
             glyph.xAdvance = static_cast<float>(positions[i].x_advance) / 64.0f;
             glyph.xOffset = static_cast<float>(positions[i].x_offset) / 64.0f;
             glyph.yOffset = static_cast<float>(positions[i].y_offset) / 64.0f;
+            glyph.rtl = run.rtl;
             out->push_back(glyph);
         }
     }

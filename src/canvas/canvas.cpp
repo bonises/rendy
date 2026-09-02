@@ -1,6 +1,7 @@
 #include "rendy/canvas/canvas.hpp"
 
 #include "canvas/canvas_data.hpp"
+#include "text/caret.hpp"
 #include "text/glyph_cache.hpp"
 #include "text/utf8.hpp"
 
@@ -126,9 +127,13 @@ Vec2 Canvas::measureText(std::string_view str, const DrawTextOptions& options) {
 namespace {
 
 // Greedy word wrap; a word longer than maxWidth breaks inside itself.
-// `measure` measures a substring's width; `emit` receives each line.
-template <typename Measure, typename Emit>
-void wrapLines(std::string_view str, float maxWidth, Measure&& measure, Emit&& emit) {
+// `measure` measures a substring's width; `breakOffsets` returns the valid
+// break positions inside a word (shaping-cluster boundaries — breaking
+// inside a cluster would split combining marks or ligated sequences);
+// `emit` receives each line.
+template <typename Measure, typename BreakOffsets, typename Emit>
+void wrapLines(std::string_view str, float maxWidth, Measure&& measure,
+               BreakOffsets&& breakOffsets, Emit&& emit) {
     size_t paragraphStart = 0;
     while (paragraphStart <= str.size()) {
         size_t newline = str.find('\n', paragraphStart);
@@ -160,18 +165,17 @@ void wrapLines(std::string_view str, float maxWidth, Measure&& measure, Emit&& e
 
                 auto line = paragraph.substr(lineStart, lineEnd - lineStart);
                 if (measure(line) > maxWidth) {
-                    // Single oversized word: break at codepoints (min 1).
-                    size_t offset = 0;
-                    size_t fit = 0;
-                    while (offset < line.size()) {
-                        const size_t prev = offset;
-                        text::decodeUtf8(line, offset);
-                        if (fit > 0 && measure(line.substr(0, offset)) > maxWidth) {
-                            offset = prev;
+                    // Single oversized word: break at the last shaping
+                    // cluster that fits (min one cluster).
+                    const std::vector<size_t>& breaks = breakOffsets(line);
+                    size_t offset = line.size();
+                    for (size_t i = 2; i < breaks.size(); ++i) { // breaks[0] = 0
+                        if (measure(line.substr(0, breaks[i])) > maxWidth) {
+                            offset = breaks[i - 1];
                             break;
                         }
-                        fit++;
                     }
+                    if (offset == 0) offset = line.size();
                     line = line.substr(0, offset);
                     lineEnd = lineStart + offset;
                     emit(line);
@@ -197,9 +201,15 @@ Vec2 Canvas::drawTextWrapped(std::string_view str, Vec2 pos, float maxWidth,
     const float lineHeight = cache->metrics(options.font.id, options.size).lineHeight;
     float y = pos.y;
     float widest = 0.0f;
+    std::vector<size_t> breakScratch;
     wrapLines(
         str, maxWidth,
         [&](std::string_view piece) { return measureText(piece, options).x; },
+        [&](std::string_view word) -> const std::vector<size_t>& {
+            text::clusterBreaks(cache->shapeLine(options.font.id, options.size, word),
+                                word.size(), &breakScratch);
+            return breakScratch;
+        },
         [&](std::string_view line) {
             widest = std::max(widest, drawText(line, {pos.x, y}, options).x);
             y += lineHeight;
@@ -214,9 +224,15 @@ Vec2 Canvas::measureTextWrapped(std::string_view str, float maxWidth,
     const float lineHeight = cache->metrics(options.font.id, options.size).lineHeight;
     float height = 0.0f;
     float widest = 0.0f;
+    std::vector<size_t> breakScratch;
     wrapLines(
         str, maxWidth,
         [&](std::string_view piece) { return measureText(piece, options).x; },
+        [&](std::string_view word) -> const std::vector<size_t>& {
+            text::clusterBreaks(cache->shapeLine(options.font.id, options.size, word),
+                                word.size(), &breakScratch);
+            return breakScratch;
+        },
         [&](std::string_view line) {
             widest = std::max(widest, measureText(line, options).x);
             height += lineHeight;

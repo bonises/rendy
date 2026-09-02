@@ -4,6 +4,7 @@
 #include "canvas/canvas_data.hpp"
 #include "css/cascade.hpp"
 #include "css/parser.hpp"
+#include "text/caret.hpp"
 #include "ui/animations.hpp"
 #include "ui/text_edit.hpp"
 #include "ui/transitions.hpp"
@@ -306,12 +307,17 @@ struct ContextImpl {
 
     // ---------------------------------------------------------- text input
 
-    /// Text width of text[0..bytes) in the node's font.
-    float prefixWidth(Node* node, size_t bytes) {
-        Canvas canvas = app->canvas();
-        const DrawTextOptions options{.font = resolveFont(node->style.fontFamily),
-                                      .size = node->style.fontSize};
-        return canvas.measureText(std::string_view(node->text).substr(0, bytes), options).x;
+    /// Shapes the node's text (scratch buffer — use the result immediately).
+    const std::vector<text::ShapedGlyph>& shapeInput(Node* node) {
+        return app->glyphs->shapeLine(resolveFont(node->style.fontFamily).id,
+                                      node->style.fontSize, node->text);
+    }
+
+    /// Visual caret x (relative to the text origin) for a byte offset —
+    /// derived from the same shaped run the renderer draws, so ligatures
+    /// and RTL runs position correctly.
+    float caretXAt(Node* node, size_t bytes) {
+        return text::caretX(shapeInput(node), node->text, bytes);
     }
 
     float inputTextLeft(Node* node) {
@@ -321,20 +327,7 @@ struct ContextImpl {
 
     /// Caret byte offset closest to screen-space x.
     size_t caretFromX(Node* node, float x) {
-        const float textLeft = inputTextLeft(node);
-        size_t best = 0;
-        float bestDist = std::abs(x - textLeft);
-        size_t pos = 0;
-        while (pos < node->text.size()) {
-            const size_t next = edit::nextCp(node->text, pos);
-            const float dist = std::abs(x - (textLeft + prefixWidth(node, next)));
-            if (dist < bestDist) {
-                bestDist = dist;
-                best = next;
-            }
-            pos = next;
-        }
-        return best;
+        return text::caretFromX(shapeInput(node), node->text, x - inputTextLeft(node));
     }
 
     /// Keyboard editing on the focused <input>. Runs every frame; fires
@@ -544,39 +537,34 @@ struct ContextImpl {
     /// Called after the cascade wrote node->style: starts animations that
     /// appeared, drops ones that vanished, and recompiles keyframe tracks
     /// against the new base style (running animations keep their clock).
+    /// Actives match declarations by LIST POSITION + name — CSS allows the
+    /// same @keyframes name twice with different timing, and each entry
+    /// runs its own timeline (reordering the list restarts clocks).
     void syncAnimations(Node* node) {
         if (node->style.animations.empty() && node->activeAnimations.empty()) return;
 
-        std::erase_if(node->activeAnimations, [&](const Node::ActiveAnimation& active) {
-            for (const AnimationSpec& spec : node->style.animations)
-                if (spec.name == active.spec.name) return false;
-            return true;
-        });
+        std::vector<Node::ActiveAnimation> next;
+        next.reserve(node->style.animations.size());
         for (const AnimationSpec& spec : node->style.animations) {
             const std::vector<css::Keyframe>* frames = findKeyframes(spec.name);
-            Node::ActiveAnimation* existing = nullptr;
-            for (Node::ActiveAnimation& active : node->activeAnimations)
-                if (active.spec.name == spec.name) existing = &active;
-            if (frames == nullptr) {
-                // Unknown @keyframes name: inert (it may hot-reload in later).
-                if (existing != nullptr)
-                    std::erase_if(node->activeAnimations,
-                                  [&](const Node::ActiveAnimation& active) {
-                                      return active.spec.name == spec.name;
-                                  });
-                continue;
-            }
-            if (existing == nullptr) {
-                node->activeAnimations.push_back(
-                    {spec, anim::compileTracks(*frames, node->style), 0.0f, false});
-            } else {
-                existing->spec = spec;
-                existing->tracks = anim::compileTracks(*frames, node->style);
-                // Keep `done` in sync with the (possibly edited) timing so a
+            if (frames == nullptr) continue; // unknown name: inert (may hot-reload in)
+
+            Node::ActiveAnimation active;
+            active.spec = spec;
+            active.tracks = anim::compileTracks(*frames, node->style);
+            // `next.size()` indexes the previous actives too — both lists
+            // contain only the resolvable entries, in declaration order.
+            if (next.size() < node->activeAnimations.size() &&
+                node->activeAnimations[next.size()].spec.name == spec.name) {
+                // Same slot, same timeline: keep the clock running. `done`
+                // resyncs with the (possibly hot-reloaded) timing so a
                 // finished flag never re-fires markDirty every restyle.
-                existing->done = anim::sampleTimeline(spec, existing->elapsed).finished;
+                active.elapsed = node->activeAnimations[next.size()].elapsed;
+                active.done = anim::sampleTimeline(spec, active.elapsed).finished;
             }
+            next.push_back(std::move(active));
         }
+        node->activeAnimations = std::move(next);
     }
 
     /// Advance all running animations by dt; returns true when a re-layout
@@ -783,8 +771,7 @@ struct ContextImpl {
 
         // Keep the caret inside the visible span.
         if (isFocused) {
-            const float caretOffset =
-                prefixWidth(node, cursor); // width of text before the caret
+            const float caretOffset = caretXAt(node, cursor); // x before the caret
             const float visible = std::max(innerRight - innerLeft, 1.0f);
             if (caretOffset - node->textScrollX > visible)
                 node->textScrollX = caretOffset - visible;
@@ -801,8 +788,12 @@ struct ContextImpl {
         const float textTop = node->rect.top() + (node->rect.size.y - lineHeight) * 0.5f;
 
         if (isFocused && cursor != anchor) {
-            const float x0 = textLeft + prefixWidth(node, std::min(cursor, anchor));
-            const float x1 = textLeft + prefixWidth(node, std::max(cursor, anchor));
+            // Two caret stops bound the selection; RTL runs give x0 > x1,
+            // so order by position (single rect — fine for one-direction
+            // text, approximate across mixed runs).
+            float x0 = textLeft + caretXAt(node, std::min(cursor, anchor));
+            float x1 = textLeft + caretXAt(node, std::max(cursor, anchor));
+            if (x0 > x1) std::swap(x0, x1);
             canvas.drawRect({{x0, textTop}, {x1 - x0, lineHeight}},
                             {.color = s.textColor.fade(0.25f * opacity)});
         }
@@ -816,7 +807,7 @@ struct ContextImpl {
         }
 
         if (isFocused && blinkOn) { // blink phase is computed once per paint
-            const float caretX = textLeft + prefixWidth(node, cursor);
+            const float caretX = textLeft + caretXAt(node, cursor);
             canvas.drawRect({{caretX, textTop}, {1.5f, lineHeight}},
                             {.color = s.textColor.fade(opacity)});
         }

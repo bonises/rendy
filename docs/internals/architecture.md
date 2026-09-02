@@ -72,6 +72,11 @@ per-frame-slot mapped SSBO and render as ONE
   cached per (font, size, **glyph id**) — the shaper's output, not
   codepoints. Note: `stbrp_context` self-references, so atlas pages live
   behind `unique_ptr` and must never move.
+- Caret/selection/hit-test geometry (`src/text/caret.hpp`) derives from
+  the same shaped run the renderer draws: byte offset ↔ visual x via
+  cluster extents, interpolated inside multi-byte clusters (ligatures)
+  and mirrored in RTL runs. Emergency word-wrap breaks only at cluster
+  boundaries, so combining marks and ligated sequences never split.
 - Colors are sRGB in instance data, converted to linear in the shader; the
   sRGB swapchain encodes on write, so blending is linear-correct.
 - **Damage-based UI painting**: `ui::Context` records the quads (and clip

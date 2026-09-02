@@ -28,6 +28,7 @@ struct ShapedGlyph {
     float xAdvance = 0.0f;   ///< px
     float xOffset = 0.0f;    ///< px, added to the pen position
     float yOffset = 0.0f;    ///< px, positive = up (font space)
+    bool rtl = false;        ///< direction of the run this glyph shaped in
 };
 
 class Shaper {

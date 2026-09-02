@@ -122,7 +122,9 @@ instead of re-walking the tree — an idle UI costs near-zero CPU.
 it; typing edits with full UTF-8, mouse-drag/shift-arrow selection,
 ctrl+arrow word jumps, ctrl+A, Home/End, ctrl+Backspace, a blinking caret
 and horizontal scrolling when the text overflows. Line breaks in
-pasted/IME text are stripped (it stays single-line). Style it like any element
+pasted/IME text are stripped (it stays single-line). Caret and selection
+follow the shaped text — correct inside ligatures and in RTL input (the
+caret for logical position 0 in Arabic text sits at the right edge). Style it like any element
 (give it a `width`; use `:focus` for the focus ring):
 
 ```cpp

@@ -7,6 +7,7 @@ add_executable(rendy_tests
   math/test_math.cpp
   text/test_utf8.cpp
   text/test_shaper.cpp
+  text/test_caret.cpp
   css/test_tokenizer.cpp
   css/test_parser.cpp
   css/test_cascade.cpp
