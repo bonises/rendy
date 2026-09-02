@@ -602,6 +602,30 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
         }
         return false;
     }
+    if (name == "box-shadow") {
+        // box-shadow: none | <x> <y> <blur> [<color>]  (single, no spread/inset)
+        if (v.size() == 1 && v[0].is(TokenType::Ident) && v[0].value == "none") {
+            emitNumber(rule, Prop::ShadowBlur, 0.0f);
+            return true;
+        }
+        std::vector<float> lengths;
+        size_t i = 0;
+        while (i < v.size() && lengths.size() < 3 &&
+               (v[i].is(TokenType::Dimension) || v[i].is(TokenType::Number))) {
+            lengths.push_back(parseFloat(v[i].value));
+            ++i;
+        }
+        if (lengths.size() < 3) return false;
+        emitNumber(rule, Prop::ShadowOffsetX, lengths[0]);
+        emitNumber(rule, Prop::ShadowOffsetY, lengths[1]);
+        emitNumber(rule, Prop::ShadowBlur, lengths[2]);
+        if (i < v.size()) {
+            auto c = tokensToColor(v, &i);
+            if (!c || i != v.size()) return false;
+            emitColor(rule, Prop::ShadowColor, *c);
+        }
+        return true;
+    }
     if (name == "transition") {
         // transition: <property> <duration> [<timing>] [<delay>] {, ...}
         // "none" clears; property "all" (or omitted) animates everything.
@@ -618,6 +642,7 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
             {"border-color", Prop::BorderColor},
             {"border-width", Prop::BorderWidth},
             {"border-radius", Prop::BorderRadiusTL}, // expanded on start
+            {"box-shadow", Prop::ShadowBlur},         // expanded on start
             {"opacity", Prop::Opacity},
             {"width", Prop::Width},
             {"height", Prop::Height},

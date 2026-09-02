@@ -590,7 +590,10 @@ struct ContextImpl {
                             {.color = s.backgroundColor.fade(opacity),
                              .cornerRadii = s.borderRadius,
                              .borderWidth = s.borderWidth,
-                             .borderColor = s.borderColor.fade(opacity)});
+                             .borderColor = s.borderColor.fade(opacity),
+                             .shadowBlur = s.shadowBlur,
+                             .shadowOffset = s.shadowOffset,
+                             .shadowColor = s.shadowColor.fade(opacity)});
         }
 
         const bool clips = s.overflow != Overflow::Visible;

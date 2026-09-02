@@ -28,6 +28,11 @@ struct DrawRectOptions {
     Vec4 cornerRadii{-1.0f};
     float borderWidth = 0.0f;
     Color borderColor = colors::black;
+    /// Soft drop shadow behind the rect (blur 0 disables it). Costs one
+    /// extra quad — same batch, no extra draw calls.
+    float shadowBlur = 0.0f;
+    Vec2 shadowOffset{0.0f, 2.0f};
+    Color shadowColor{0.0f, 0.0f, 0.0f, 0.35f};
 };
 
 struct DrawImageOptions {

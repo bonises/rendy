@@ -1,4 +1,5 @@
 add_executable(rendy_tests
+  lsan_suppressions.cpp
   core/test_result.cpp
   core/test_handle.cpp
   core/test_color.cpp

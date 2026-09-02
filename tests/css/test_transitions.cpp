@@ -1,6 +1,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "css/cascade.hpp"
 #include "css/parser.hpp"
 #include "ui/transitions.hpp"
 
@@ -99,7 +100,10 @@ TEST_CASE("timing functions hit their endpoints and are monotonic-ish",
 TEST_CASE("expandSpec expands all and border-radius", "[css][transition]") {
     std::vector<TransitionSpec> out;
     ui::anim::expandSpec({Prop::Count, 0.2f, 0.0f, Timing::Ease}, &out);
-    REQUIRE(out.size() == 11);
+    REQUIRE(out.size() == 15);
+    out.clear();
+    ui::anim::expandSpec({Prop::ShadowBlur, 0.2f, 0.0f, Timing::Ease}, &out);
+    REQUIRE(out.size() == 4); // box-shadow: offsets + blur + color
     out.clear();
     ui::anim::expandSpec({Prop::BorderRadiusTL, 0.2f, 0.0f, Timing::Ease}, &out);
     REQUIRE(out.size() == 4);
@@ -121,4 +125,19 @@ TEST_CASE("animatable get/set roundtrip", "[css][transition]") {
     style.width = ui::Length::px(120.0f);
     REQUIRE(ui::anim::getAnimatable(style, Prop::Width, &value));
     REQUIRE(value.x == Approx(120.0f));
+}
+
+TEST_CASE("box-shadow parses and none disables", "[css][shadow]") {
+    auto sheet = parse("x { box-shadow: 2 4 10 rgba(0, 0, 0, 0.5); } y { box-shadow: none; }");
+    REQUIRE(sheet.hasValue());
+    ComputedStyle styleX;
+    for (const auto& d : sheet.value().rules[0].declarations) applyDeclaration(d, &styleX);
+    REQUIRE(styleX.shadowOffset.x == Approx(2.0f));
+    REQUIRE(styleX.shadowOffset.y == Approx(4.0f));
+    REQUIRE(styleX.shadowBlur == Approx(10.0f));
+    REQUIRE(styleX.shadowColor.a == Approx(0.5f));
+    ComputedStyle styleY;
+    styleY.shadowBlur = 8.0f;
+    for (const auto& d : sheet.value().rules[1].declarations) applyDeclaration(d, &styleY);
+    REQUIRE(styleY.shadowBlur == 0.0f);
 }

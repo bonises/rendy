@@ -57,8 +57,10 @@ button {
   border-radius: 8px;
   background-color: #45475a;
   color: #cdd6f4;
-  transition: background-color 0.18s ease-out, color 0.18s ease-out;
+  box-shadow: 0 2 6 rgba(0, 0, 0, 0.45);
+  transition: background-color 0.18s ease-out, color 0.18s ease-out, box-shadow 0.18s ease-out;
 }
+button:hover { box-shadow: 0 4 14 rgba(0, 0, 0, 0.6); }
 
 button:hover { background-color: #585b70; }
 button:active { background-color: #6c7086; }
@@ -84,6 +86,7 @@ button:disabled { opacity: 0.4; }
   overflow: scroll;
   padding: 8px;
   gap: 4px;
+  box-shadow: 0 6 22 rgba(0, 0, 0, 0.5);
 }
 
 .row {

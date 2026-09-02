@@ -50,9 +50,10 @@ spec; later stylesheets override earlier ones; inline styles win.
 
 **Paint & text properties**: `background-color` (and `background` with a
 color), `border` / `border-width` / `border-color`, `border-radius` (1–4
-values), `color`, `opacity` (multiplies down the subtree), `font-size`,
-`font-family`, `text-align`, `line-height` (number = multiplier, px =
-absolute).
+values), `box-shadow: <x> <y> <blur> [<color>]` (single shadow, `none`
+disables; no spread/inset), `color`, `opacity` (multiplies down the
+subtree), `font-size`, `font-family`, `text-align`, `line-height` (number =
+multiplier, px = absolute).
 
 **Values**: `px`, `%`, `em` (relative to the element's font size; for
 `font-size` itself, relative to the inherited size), unitless numbers where

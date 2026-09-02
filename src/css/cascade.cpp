@@ -115,6 +115,10 @@ void applyDeclaration(const Declaration& d, ComputedStyle* s) {
     case Prop::BackgroundColor: s->backgroundColor = d.value.color; break;
     case Prop::TextColor: s->textColor = d.value.color; break;
     case Prop::Opacity: s->opacity = d.value.number; break;
+    case Prop::ShadowOffsetX: s->shadowOffset.x = d.value.number; break;
+    case Prop::ShadowOffsetY: s->shadowOffset.y = d.value.number; break;
+    case Prop::ShadowBlur: s->shadowBlur = d.value.number; break;
+    case Prop::ShadowColor: s->shadowColor = d.value.color; break;
     case Prop::FontFamily: s->fontFamily = d.value.text; break;
     case Prop::LineHeight: s->lineHeight = d.value.number; break;
     // clang-format on

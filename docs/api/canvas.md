@@ -18,7 +18,9 @@ order = paint order. Everything batches into one instanced draw.
 | `size` | `Vec2 size() const` |
 
 **DrawRectOptions**: `color` (white), `cornerRadius` (0) or per-corner
-`cornerRadii` {tl,tr,br,bl}, `borderWidth` (0), `borderColor` (black).
+`cornerRadii` {tl,tr,br,bl}, `borderWidth` (0), `borderColor` (black),
+`shadowBlur` (0 = off) + `shadowOffset` {0,2} + `shadowColor` — a soft SDF
+drop shadow behind the rect, one extra quad in the same batch.
 Radii clamp CSS-style (999 = pill).
 
 **DrawImageOptions**: `tint` (white), `uv` sub-rect ({{0,0},{1,1}}),

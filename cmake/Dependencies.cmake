@@ -63,6 +63,9 @@ set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
 set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
 set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+# ASan's ODR/global metadata references typeinfo of glslang classes used in
+# shader_compiler.cpp — without RTTI in glslang the asan preset fails to link.
+set(ENABLE_RTTI ON CACHE BOOL "" FORCE)
 set(ENABLE_SPVREMAPPER OFF CACHE BOOL "" FORCE)
 set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
 set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)

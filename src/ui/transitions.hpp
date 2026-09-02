@@ -78,7 +78,14 @@ inline void expandSpec(const TransitionSpec& spec, std::vector<TransitionSpec>* 
         for (Prop prop : {Prop::BackgroundColor, Prop::TextColor, Prop::BorderColor,
                           Prop::BorderWidth, Prop::Opacity, Prop::BorderRadiusTL,
                           Prop::BorderRadiusTR, Prop::BorderRadiusBR, Prop::BorderRadiusBL,
-                          Prop::Width, Prop::Height})
+                          Prop::ShadowOffsetX, Prop::ShadowOffsetY, Prop::ShadowBlur,
+                          Prop::ShadowColor, Prop::Width, Prop::Height})
+            push(prop);
+        return;
+    }
+    if (spec.prop == Prop::ShadowBlur) { // "box-shadow": every component
+        for (Prop prop : {Prop::ShadowOffsetX, Prop::ShadowOffsetY, Prop::ShadowBlur,
+                          Prop::ShadowColor})
             push(prop);
         return;
     }
@@ -108,6 +115,11 @@ inline bool getAnimatable(const css::ComputedStyle& s, Prop prop, Vec4* out) {
     case Prop::BorderRadiusTR: *out = {s.borderRadius.y, 0.0f, 0.0f, 0.0f}; return true;
     case Prop::BorderRadiusBR: *out = {s.borderRadius.z, 0.0f, 0.0f, 0.0f}; return true;
     case Prop::BorderRadiusBL: *out = {s.borderRadius.w, 0.0f, 0.0f, 0.0f}; return true;
+    case Prop::ShadowOffsetX: *out = {s.shadowOffset.x, 0.0f, 0.0f, 0.0f}; return true;
+    case Prop::ShadowOffsetY: *out = {s.shadowOffset.y, 0.0f, 0.0f, 0.0f}; return true;
+    case Prop::ShadowBlur: *out = {s.shadowBlur, 0.0f, 0.0f, 0.0f}; return true;
+    case Prop::ShadowColor: *out = {s.shadowColor.r, s.shadowColor.g, s.shadowColor.b,
+                                    s.shadowColor.a}; return true;
     case Prop::Width:
         if (s.width.unit != Unit::Px) return false;
         *out = {s.width.value, 0.0f, 0.0f, 0.0f};
@@ -131,6 +143,10 @@ inline void setAnimatable(css::ComputedStyle* s, Prop prop, const Vec4& v) {
     case Prop::BorderRadiusTR: s->borderRadius.y = v.x; break;
     case Prop::BorderRadiusBR: s->borderRadius.z = v.x; break;
     case Prop::BorderRadiusBL: s->borderRadius.w = v.x; break;
+    case Prop::ShadowOffsetX: s->shadowOffset.x = v.x; break;
+    case Prop::ShadowOffsetY: s->shadowOffset.y = v.x; break;
+    case Prop::ShadowBlur: s->shadowBlur = v.x; break;
+    case Prop::ShadowColor: s->shadowColor = {v.x, v.y, v.z, v.w}; break;
     case Prop::Width: s->width = Length::px(v.x); break;
     case Prop::Height: s->height = Length::px(v.x); break;
     default: break;

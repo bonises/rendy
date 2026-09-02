@@ -14,6 +14,23 @@ using detail::Quad2D;
 
 void Canvas::drawRect(const Rect& rect, const DrawRectOptions& options) {
     if (rect.empty()) return;
+    if (options.shadowBlur > 0.0f && options.shadowColor.a > 0.0f) {
+        // Shadow quad: the rect offset and expanded by the blur radius; the
+        // shader evaluates the SDF against the un-expanded box.
+        const float blur = options.shadowBlur;
+        Quad2D shadow{};
+        shadow.rect = {rect.pos.x + options.shadowOffset.x - blur,
+                       rect.pos.y + options.shadowOffset.y - blur,
+                       rect.size.x + 2.0f * blur, rect.size.y + 2.0f * blur};
+        shadow.uvRect = {0.0f, 0.0f, 1.0f, 1.0f};
+        shadow.color = {options.shadowColor.r, options.shadowColor.g, options.shadowColor.b,
+                        options.shadowColor.a};
+        shadow.radii = options.cornerRadii.x >= 0.0f ? options.cornerRadii
+                                                     : Vec4{options.cornerRadius};
+        shadow.info = {0.0f, blur, static_cast<float>(data_->currentClip()),
+                       detail::kQuadKindShadow};
+        data_->quads.push_back(shadow);
+    }
     Quad2D quad{};
     quad.rect = {rect.pos.x, rect.pos.y, rect.size.x, rect.size.y};
     quad.uvRect = {0.0f, 0.0f, 1.0f, 1.0f};

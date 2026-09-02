@@ -52,6 +52,7 @@ enum class Prop : uint8_t {
     Overflow, BorderWidth, BorderColor,
     BorderRadiusTL, BorderRadiusTR, BorderRadiusBR, BorderRadiusBL,
     BackgroundColor, TextColor, Opacity,
+    ShadowOffsetX, ShadowOffsetY, ShadowBlur, ShadowColor,
     FontSize, FontFamily, TextAlignProp, LineHeight,
     Transition,
     Count,
@@ -131,6 +132,10 @@ public:
         number(Prop::BorderRadiusBR, px); return number(Prop::BorderRadiusBL, px);
     }
     Style& backgroundColor(Color c) { return color(Prop::BackgroundColor, c); }
+    Style& boxShadow(float offsetX, float offsetY, float blur, Color c) {
+        number(Prop::ShadowOffsetX, offsetX); number(Prop::ShadowOffsetY, offsetY);
+        number(Prop::ShadowBlur, blur); return color(Prop::ShadowColor, c);
+    }
     Style& textColor(Color c) { return color(Prop::TextColor, c); }
     Style& opacity(float v) { return number(Prop::Opacity, v); }
     Style& fontSize(float px) { return number(Prop::FontSize, px); }

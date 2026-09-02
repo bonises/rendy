@@ -16,6 +16,7 @@ struct Quad {
 const float KIND_SOLID = 0.0;
 const float KIND_IMAGE = 1.0;
 const float KIND_TEXT = 2.0;
+const float KIND_SHADOW = 3.0; // info.y = blur radius px
 
 layout(set = 0, binding = 0) uniform sampler2D textures[];
 layout(std430, set = 1, binding = 0) readonly buffer Quads { Quad quads[]; };
@@ -53,12 +54,25 @@ void main() {
     if (clipAlpha <= 0.0) discard;
 
     vec2 halfSize = q.rect.zw * 0.5;
+    float kind = q.info.w;
+
+    if (kind == KIND_SHADOW) {
+        // The quad is pre-expanded by the blur radius; the SDF runs against
+        // the original box. Squared smoothstep ≈ gaussian falloff.
+        float blur = max(q.info.y, 0.5);
+        float dist = roundedBoxSDF(vLocal - halfSize, halfSize - vec2(blur), q.radii);
+        float shadow = 1.0 - smoothstep(-blur, blur, dist);
+        shadow *= shadow;
+        if (shadow <= 0.0) discard;
+        fragColor = vec4(srgbToLinear(q.color.rgb), q.color.a * shadow * clipAlpha);
+        return;
+    }
+
     float dist = roundedBoxSDF(vLocal - halfSize, halfSize, q.radii);
     float coverage = clamp(0.5 - dist, 0.0, 1.0);
     if (coverage <= 0.0) discard;
 
     vec4 fill = vec4(srgbToLinear(q.color.rgb), q.color.a);
-    float kind = q.info.w;
     if (kind == KIND_IMAGE) {
         vec2 uv = mix(q.uvRect.xy, q.uvRect.zw, vLocal / q.rect.zw);
         fill *= texture(textures[nonuniformEXT(int(q.info.y))], uv);

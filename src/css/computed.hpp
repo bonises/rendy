@@ -39,6 +39,9 @@ struct ComputedStyle {
     Color borderColor = colors::black;
     Vec4 borderRadius{0.0f}; ///< tl, tr, br, bl
     float opacity = 1.0f;
+    Vec2 shadowOffset{0.0f, 2.0f};
+    float shadowBlur = 0.0f; ///< 0 = no shadow
+    Color shadowColor{0.0f, 0.0f, 0.0f, 0.35f};
 
     // Transitions (not inherited).
     std::vector<ui::TransitionSpec> transitions;

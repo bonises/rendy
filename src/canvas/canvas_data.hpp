@@ -26,6 +26,7 @@ static_assert(sizeof(Quad2D) == 96);
 inline constexpr float kQuadKindSolid = 0.0f;
 inline constexpr float kQuadKindImage = 1.0f;
 inline constexpr float kQuadKindText = 2.0f;
+inline constexpr float kQuadKindShadow = 3.0f; // info.y = blur radius px
 
 struct CanvasData {
     text::GlyphCache* glyphCache = nullptr;
