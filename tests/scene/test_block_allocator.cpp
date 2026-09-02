@@ -2,6 +2,8 @@
 
 #include "scene/block_allocator.hpp"
 
+#include <cstdint>
+
 using rendy::detail::BlockAllocator;
 
 TEST_CASE("bump allocation grows end", "[scene][alloc]") {

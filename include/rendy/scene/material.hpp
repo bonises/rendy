@@ -6,6 +6,8 @@
 #include "../core/color.hpp"
 #include "../gpu/texture.hpp"
 
+#include <cstdint>
+
 namespace rendy {
 
 /// How a material's alpha is interpreted (glTF semantics).

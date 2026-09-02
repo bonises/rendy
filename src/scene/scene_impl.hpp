@@ -10,6 +10,7 @@
 #include "rendy/scene/scene.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <vector>
 

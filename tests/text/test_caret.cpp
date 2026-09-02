@@ -4,6 +4,7 @@
 #include "text/caret.hpp"
 #include "text/shaper.hpp"
 
+#include <cstdint>
 #include <filesystem>
 
 using Catch::Approx;

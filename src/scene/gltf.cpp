@@ -18,10 +18,11 @@
 
 #include <fmt/core.h>
 
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
-#include <filesystem>
 #include <mutex>
 #include <unordered_map>
 

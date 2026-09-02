@@ -18,6 +18,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <cstdint>
 #include <memory>
 
 namespace rendy::detail {

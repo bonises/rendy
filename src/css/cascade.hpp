@@ -6,6 +6,7 @@
 #include "css/computed.hpp"
 #include "css/stylesheet.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <string_view>
 #include <vector>

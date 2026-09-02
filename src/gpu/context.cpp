@@ -1,5 +1,6 @@
 #include "gpu/context.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>

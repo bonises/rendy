@@ -8,6 +8,7 @@
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <mutex>

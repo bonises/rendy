@@ -2,6 +2,7 @@
 
 #include "text/shape_cache.hpp"
 
+#include <cstdint>
 #include <filesystem>
 
 using namespace rendy;

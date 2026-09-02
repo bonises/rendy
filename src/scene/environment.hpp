@@ -7,6 +7,7 @@
 #include "gpu/context.hpp"
 #include "rendy/core/result.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>

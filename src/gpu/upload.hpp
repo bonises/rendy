@@ -7,6 +7,7 @@
 #include "gpu/context.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 
 namespace rendy::gpu {

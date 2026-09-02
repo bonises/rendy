@@ -5,6 +5,7 @@
 
 #include "rendy/math/math.hpp"
 
+#include <cstdint>
 #include <vector>
 
 namespace rendy::text {

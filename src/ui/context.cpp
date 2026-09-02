@@ -13,6 +13,7 @@
 #include <yoga/Yoga.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <sstream>

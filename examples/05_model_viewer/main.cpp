@@ -5,6 +5,7 @@
 #include <rendy/rendy.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <string_view>

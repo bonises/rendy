@@ -4,6 +4,7 @@
 
 #include "gpu/context.hpp"
 
+#include <cstdint>
 #include <vector>
 
 namespace rendy::gpu {

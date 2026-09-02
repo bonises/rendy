@@ -1,5 +1,7 @@
 #include "gpu/bindless.hpp"
 
+#include <cstdint>
+
 namespace rendy::gpu {
 
 BindlessTable::BindlessTable(Context& ctx) : ctx_(ctx) {

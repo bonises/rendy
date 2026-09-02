@@ -1,6 +1,7 @@
 #include "gpu/upload.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 
 namespace rendy::gpu {

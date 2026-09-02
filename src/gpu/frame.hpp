@@ -7,6 +7,7 @@
 #include "gpu/swapchain.hpp"
 
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <vector>

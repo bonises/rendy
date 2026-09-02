@@ -1,5 +1,7 @@
 #include "gpu/frame.hpp"
 
+#include <cstdint>
+
 namespace rendy::gpu {
 
 FrameRing::FrameRing(Context& ctx, Swapchain& swapchain) : ctx_(ctx), swapchain_(swapchain) {

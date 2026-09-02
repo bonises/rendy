@@ -18,6 +18,7 @@
 #include "../math/math.hpp"
 #include "input.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>

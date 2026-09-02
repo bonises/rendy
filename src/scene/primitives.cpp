@@ -1,6 +1,7 @@
 #include "rendy/scene/primitives.hpp"
 
 #include <cmath>
+#include <cstdint>
 
 namespace rendy::primitives {
 namespace {

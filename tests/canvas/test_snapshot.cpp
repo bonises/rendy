@@ -2,6 +2,8 @@
 
 #include "canvas/canvas_data.hpp"
 
+#include <cstdint>
+
 using namespace rendy;
 using namespace rendy::detail;
 

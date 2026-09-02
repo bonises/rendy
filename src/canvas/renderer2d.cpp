@@ -3,6 +3,7 @@
 #include "shaders/quad2d_frag_spv.h"
 #include "shaders/quad2d_vert_spv.h"
 
+#include <cstdint>
 #include <cstring>
 
 namespace rendy::detail {

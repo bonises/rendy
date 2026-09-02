@@ -8,6 +8,7 @@
 #include "gpu/frame.hpp"
 #include "gpu/shader_blob.hpp"
 
+#include <cstdint>
 #include <string_view>
 
 namespace rendy::detail {

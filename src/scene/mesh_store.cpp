@@ -1,5 +1,6 @@
 #include "scene/mesh_store.hpp"
 
+#include <cstdint>
 #include <cstring>
 
 namespace rendy::detail {

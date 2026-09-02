@@ -12,6 +12,7 @@
 
 #include <stb_image.h>
 
+#include <cstdint>
 #include <cstring>
 #include <vector>
 

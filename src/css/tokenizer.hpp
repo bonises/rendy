@@ -3,6 +3,7 @@
 // Small CSS tokenizer. Comments are skipped; whitespace is a token because
 // it separates descendant combinators in selectors.
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>

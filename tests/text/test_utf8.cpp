@@ -2,6 +2,7 @@
 
 #include "text/utf8.hpp"
 
+#include <cstdint>
 #include <vector>
 
 using rendy::text::decodeUtf8;

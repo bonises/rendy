@@ -4,6 +4,7 @@
 #include "rendy/core/log.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace rendy::gpu {
 

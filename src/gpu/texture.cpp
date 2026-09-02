@@ -3,6 +3,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 
 namespace rendy::gpu {

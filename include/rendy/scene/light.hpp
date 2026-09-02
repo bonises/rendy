@@ -5,6 +5,8 @@
 #include "../core/color.hpp"
 #include "../math/math.hpp"
 
+#include <cstdint>
+
 namespace rendy {
 
 struct Light {

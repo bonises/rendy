@@ -12,6 +12,7 @@
 #include "material.hpp"
 #include "mesh.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>

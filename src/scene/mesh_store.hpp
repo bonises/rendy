@@ -10,6 +10,7 @@
 #include "scene/block_allocator.hpp"
 #include "rendy/scene/mesh.hpp"
 
+#include <cstdint>
 #include <vector>
 
 namespace rendy::detail {

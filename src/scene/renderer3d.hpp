@@ -12,6 +12,7 @@
 #include "scene/scene_impl.hpp"
 #include "rendy/scene/camera.hpp"
 
+#include <cstdint>
 #include <string_view>
 
 namespace rendy::detail {

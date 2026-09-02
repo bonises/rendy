@@ -5,6 +5,7 @@
 #include "scene/scene_impl.hpp"
 
 #include <cmath>
+#include <cstdint>
 
 namespace rendy {
 namespace {

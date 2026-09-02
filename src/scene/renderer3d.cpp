@@ -14,6 +14,7 @@
 #include "shaders/tonemap_vert_spv.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <map>
 

@@ -1,6 +1,7 @@
 #include "css/cascade.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace rendy::css {
 

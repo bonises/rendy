@@ -8,6 +8,7 @@
 #ifdef RENDY_SHADER_HOT_RELOAD
 #include "gpu/shader_compiler.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #endif
 
