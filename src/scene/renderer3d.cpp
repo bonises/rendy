@@ -1016,7 +1016,7 @@ void Renderer3D::render(VkCommandBuffer cmd, uint32_t slot, SceneImpl& scene,
 
     for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
         const SceneNode& node = scene.nodes[i];
-        if (!node.alive || !node.mesh.valid()) continue;
+        if (!node.alive || !node.mesh.valid() || !scene.meshes->valid(node.mesh)) continue;
 
         const bool blends = node.material.id < scene.materialAlphaModes.size() &&
                             scene.materialAlphaModes[node.material.id] == AlphaMode::Blend;
@@ -1590,7 +1590,7 @@ void Renderer3D::bakeProbes(SceneImpl& scene) {
     std::map<int32_t, uint32_t> jointBaseOfSkin;
     for (uint32_t i = 0; i < scene.nodes.size(); ++i) {
         const SceneNode& node = scene.nodes[i];
-        if (!node.alive || !node.mesh.valid()) continue;
+        if (!node.alive || !node.mesh.valid() || !scene.meshes->valid(node.mesh)) continue;
         if (node.material.id < scene.materialAlphaModes.size() &&
             scene.materialAlphaModes[node.material.id] == AlphaMode::Blend)
             continue; // transparent surfaces are skipped in probe captures

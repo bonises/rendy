@@ -1,11 +1,13 @@
 #pragma once
 
 // GPU mesh storage: all static mesh data lives in two big device-local
-// buffers (one vertex, one index), bound once per scene pass. v1 allocates
-// append-only; destroyed meshes leave holes until a future compactor.
+// buffers (one vertex, one index), bound once per scene pass. Vertex/index
+// space is recycled through a free-list allocator; morph deltas stay
+// append-only (rarely destroyed).
 
 #include "gpu/context.hpp"
 #include "gpu/upload.hpp"
+#include "scene/block_allocator.hpp"
 #include "rendy/scene/mesh.hpp"
 
 #include <vector>
@@ -23,6 +25,7 @@ struct MeshRange {
     uint32_t morphDeltaBase = UINT32_MAX;
     uint32_t morphTargetCount = 0;
     uint32_t vertexCount = 0;
+    bool alive = true; ///< false after destroy(); handle slot reused later
 };
 
 // GPU layout of one morph delta (std430).
@@ -40,6 +43,14 @@ public:
     MeshStore& operator=(const MeshStore&) = delete;
 
     MeshHandle add(const MeshData& data);
+    /// Frees the mesh's vertex/index space for reuse and retires the handle
+    /// (its id slot is recycled by a later add — don't keep dead handles).
+    /// GPU-safe mid-flight: the space is only rewritten by later uploads on
+    /// the same queue.
+    void destroy(MeshHandle handle);
+    [[nodiscard]] bool valid(MeshHandle handle) const {
+        return handle.id < ranges_.size() && ranges_[handle.id].alive;
+    }
     [[nodiscard]] const MeshRange& range(MeshHandle handle) const {
         return ranges_[handle.id];
     }
@@ -63,10 +74,11 @@ private:
     size_t vertexCapacity_ = 0;
     size_t indexCapacity_ = 0;
     size_t morphCapacity_ = 0;
-    uint32_t vertexCount_ = 0;
-    uint32_t indexCount_ = 0;
+    BlockAllocator vertexAlloc_; // units: vertices
+    BlockAllocator indexAlloc_;  // units: indices
     uint32_t morphEntryCount_ = 0;
     std::vector<MeshRange> ranges_;
+    std::vector<uint32_t> freeRangeIds_;
 };
 
 } // namespace rendy::detail

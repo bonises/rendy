@@ -41,8 +41,8 @@ MeshStore::~MeshStore() {
 }
 
 void MeshStore::ensureRoom(size_t vertexBytes, size_t indexBytes) {
-    const size_t neededVertex = vertexCount_ * sizeof(Vertex) + vertexBytes;
-    const size_t neededIndex = indexCount_ * sizeof(uint32_t) + indexBytes;
+    const size_t neededVertex = vertexBytes;
+    const size_t neededIndex = indexBytes;
     if (neededVertex <= vertexCapacity_ && neededIndex <= indexCapacity_) return;
 
     size_t newVertexCapacity = vertexCapacity_;
@@ -65,12 +65,12 @@ void MeshStore::ensureRoom(size_t vertexBytes, size_t indexBytes) {
 
     const uint8_t dummy = 0;
     uploader_.submit(&dummy, 1, [&](VkCommandBuffer cmd, VkBuffer) {
-        if (vertexCount_ > 0) {
-            VkBufferCopy copy{0, 0, vertexCount_ * sizeof(Vertex)};
+        if (vertexAlloc_.end() > 0) {
+            VkBufferCopy copy{0, 0, vertexAlloc_.end() * sizeof(Vertex)};
             vkCmdCopyBuffer(cmd, vertexBuffer_, newVertex, 1, &copy);
         }
-        if (indexCount_ > 0) {
-            VkBufferCopy copy{0, 0, indexCount_ * sizeof(uint32_t)};
+        if (indexAlloc_.end() > 0) {
+            VkBufferCopy copy{0, 0, indexAlloc_.end() * sizeof(uint32_t)};
             vkCmdCopyBuffer(cmd, indexBuffer_, newIndex, 1, &copy);
         }
     });
@@ -88,16 +88,21 @@ void MeshStore::ensureRoom(size_t vertexBytes, size_t indexBytes) {
 MeshHandle MeshStore::add(const MeshData& data) {
     const size_t vertexBytes = data.vertices.size() * sizeof(Vertex);
     const size_t indexBytes = data.indices.size() * sizeof(uint32_t);
-    ensureRoom(vertexBytes, indexBytes);
+    // Reuse freed space when a fitting hole exists, else bump-allocate.
+    const uint32_t vertexOffset =
+        vertexAlloc_.allocate(static_cast<uint32_t>(data.vertices.size()));
+    const uint32_t indexOffset =
+        indexAlloc_.allocate(static_cast<uint32_t>(data.indices.size()));
+    ensureRoom(vertexAlloc_.end() * sizeof(Vertex), indexAlloc_.end() * sizeof(uint32_t));
 
     uploader_.submit(data.vertices.data(), vertexBytes,
                      [&](VkCommandBuffer cmd, VkBuffer staging) {
-                         VkBufferCopy copy{0, vertexCount_ * sizeof(Vertex), vertexBytes};
+                         VkBufferCopy copy{0, vertexOffset * sizeof(Vertex), vertexBytes};
                          vkCmdCopyBuffer(cmd, staging, vertexBuffer_, 1, &copy);
                      });
     uploader_.submit(data.indices.data(), indexBytes,
                      [&](VkCommandBuffer cmd, VkBuffer staging) {
-                         VkBufferCopy copy{0, indexCount_ * sizeof(uint32_t), indexBytes};
+                         VkBufferCopy copy{0, indexOffset * sizeof(uint32_t), indexBytes};
                          vkCmdCopyBuffer(cmd, staging, indexBuffer_, 1, &copy);
                      });
 
@@ -150,9 +155,9 @@ MeshHandle MeshStore::add(const MeshData& data) {
     range.morphDeltaBase = morphDeltaBase;
     range.morphTargetCount = static_cast<uint32_t>(data.morphTargets.size());
     range.vertexCount = static_cast<uint32_t>(data.vertices.size());
-    range.firstIndex = indexCount_;
+    range.firstIndex = indexOffset;
     range.indexCount = static_cast<uint32_t>(data.indices.size());
-    range.vertexOffset = static_cast<int32_t>(vertexCount_);
+    range.vertexOffset = static_cast<int32_t>(vertexOffset);
     range.boundsCenter = data.boundsCenter;
     range.boundsRadius = data.boundsRadius;
     if (range.boundsRadius <= 0.0f) {
@@ -160,11 +165,27 @@ MeshHandle MeshStore::add(const MeshData& data) {
             range.boundsRadius =
                 std::max(range.boundsRadius, glm::length(vertex.position - range.boundsCenter));
     }
-    ranges_.push_back(range);
 
-    vertexCount_ += static_cast<uint32_t>(data.vertices.size());
-    indexCount_ += static_cast<uint32_t>(data.indices.size());
+    if (!freeRangeIds_.empty()) {
+        const uint32_t id = freeRangeIds_.back();
+        freeRangeIds_.pop_back();
+        ranges_[id] = range;
+        return MeshHandle{id};
+    }
+    ranges_.push_back(range);
     return MeshHandle{static_cast<uint32_t>(ranges_.size() - 1)};
+}
+
+void MeshStore::destroy(MeshHandle handle) {
+    if (!valid(handle)) return;
+    MeshRange& range = ranges_[handle.id];
+    vertexAlloc_.free(static_cast<uint32_t>(range.vertexOffset), range.vertexCount);
+    indexAlloc_.free(range.firstIndex, range.indexCount);
+    // Morph deltas stay allocated (append-only store) — acceptable leak for
+    // the rare destroy-a-morphed-mesh case.
+    range = {};
+    range.alive = false;
+    freeRangeIds_.push_back(handle.id);
 }
 
 } // namespace rendy::detail

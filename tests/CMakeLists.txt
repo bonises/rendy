@@ -12,6 +12,7 @@ add_executable(rendy_tests
   layout/test_layout.cpp
   layout/test_text_edit.cpp
   scene/test_animation.cpp
+  scene/test_block_allocator.cpp
   audio/test_mixer.cpp
 )
 target_include_directories(rendy_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

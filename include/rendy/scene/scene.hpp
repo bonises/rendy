@@ -75,6 +75,10 @@ public:
     // ---- content ---------------------------------------------------------
 
     MeshHandle createMesh(const MeshData& data);
+    /// Frees a mesh's GPU space for reuse by later createMesh/addMesh calls.
+    /// Nodes still using it lose their mesh (with a warning). The handle
+    /// becomes inert but its id is recycled — drop it after this call.
+    void destroyMesh(MeshHandle mesh);
     MaterialHandle createMaterial(const MaterialDesc& desc);
     /// Plain white-ish default material (id 0).
     [[nodiscard]] MaterialHandle defaultMaterial() const { return {0}; }

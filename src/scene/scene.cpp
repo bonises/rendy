@@ -54,6 +54,21 @@ Scene::~Scene() {
 
 MeshHandle Scene::createMesh(const MeshData& data) { return impl_->meshes->add(data); }
 
+void Scene::destroyMesh(MeshHandle mesh) {
+    if (!impl_->meshes->valid(mesh)) return;
+    uint32_t orphaned = 0;
+    for (auto& node : impl_->nodes) {
+        if (node.alive && node.mesh.id == mesh.id && node.mesh.valid()) {
+            node.mesh = {};
+            ++orphaned;
+        }
+    }
+    if (orphaned > 0)
+        log::warn("Scene::destroyMesh: {} node(s) still used mesh {} — they no longer draw",
+                  orphaned, mesh.id);
+    impl_->meshes->destroy(mesh);
+}
+
 MaterialHandle Scene::createMaterial(const MaterialDesc& desc) {
     impl_->materials.push_back(toGpu(desc));
     impl_->materialAlphaModes.push_back(desc.alphaMode);
