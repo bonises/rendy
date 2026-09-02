@@ -67,6 +67,14 @@ per-frame-slot mapped SSBO and render as ONE
   `unique_ptr` and must never move.
 - Colors are sRGB in instance data, converted to linear in the shader; the
   sRGB swapchain encodes on write, so blending is linear-correct.
+- **Damage-based UI painting**: `ui::Context` records the quads (and clip
+  rects, indices rebased) its paint pass produced into a `CanvasSnapshot`
+  (`canvas_data.hpp`) and replays that — one memcpy-ish append — on frames
+  where nothing visual changed. Any `markDirty()`, a running
+  transition/animation, the caret blink flipping, thumb drag state or a
+  resize invalidates it. App-drawn immediate content is unaffected; if the
+  app has its own clip pushed around `ui.paint()`, caching quietly disables
+  itself. Idle UIs skip the whole tree walk + text measurement.
 
 ## CSS engine (`src/css/`, `src/ui/`)
 

@@ -1,6 +1,7 @@
 #include "rendy/ui/ui.hpp"
 
 #include "app/app_impl.hpp"
+#include "canvas/canvas_data.hpp"
 #include "css/cascade.hpp"
 #include "css/parser.hpp"
 #include "ui/animations.hpp"
@@ -158,7 +159,16 @@ struct ContextImpl {
         return nullptr;
     }
 
-    void markDirty() { dirty = true; }
+    // Damage-based painting: the UI's quads are recorded once and replayed
+    // until anything visual changes (style, layout, animation, caret blink).
+    rendy::detail::CanvasSnapshot paintSnapshot;
+    bool paintSnapshotValid = false;
+    bool blinkOn = true; ///< caret blink phase, computed once per paint
+
+    void markDirty() {
+        dirty = true;
+        paintSnapshotValid = false;
+    }
 
     void forgetNode(Node* node) {
         if (hovered == node) hovered = nullptr;
@@ -216,6 +226,7 @@ struct ContextImpl {
                     scroller->rect.contains(mouse)) {
                     const ThumbGeometry g = thumbGeometry(scroller);
                     draggingScroller = scroller;
+                    markDirty(); // the thumb brightens while dragged
                     dragGrabOffset =
                         (mouse.y >= g.thumbTop && mouse.y <= g.thumbTop + g.thumbHeight)
                             ? mouse.y - g.thumbTop
@@ -236,6 +247,7 @@ struct ContextImpl {
                 }
             } else {
                 draggingScroller = nullptr;
+                markDirty(); // thumb back to its resting shade
             }
             return; // dragging swallows clicks/hover updates below
         }
@@ -493,6 +505,7 @@ struct ContextImpl {
         bool yogaDirty = false;
         for (auto it = node->activeTransitions.begin();
              it != node->activeTransitions.end();) {
+            paintSnapshotValid = false; // values move: repaint for real
             it->elapsed += dt;
             const float t =
                 it->duration > 0.0f ? (it->elapsed - it->delay) / it->duration : 1.0f;
@@ -561,9 +574,7 @@ struct ContextImpl {
                 existing->tracks = anim::compileTracks(*frames, node->style);
                 // Keep `done` in sync with the (possibly edited) timing so a
                 // finished flag never re-fires markDirty every restyle.
-                const anim::TimelineSample sample =
-                    anim::sampleTimeline(spec, existing->elapsed);
-                existing->done = sample.finished && !spec.fillForwards;
+                existing->done = anim::sampleTimeline(spec, existing->elapsed).finished;
             }
         }
     }
@@ -573,25 +584,44 @@ struct ContextImpl {
     bool advanceAnimations(Node* node, float dt) {
         bool layoutDirty = false;
         bool yogaDirty = false;
-        for (Node::ActiveAnimation& active : node->activeAnimations) {
-            if (active.done) continue;
-            active.elapsed += dt;
-            const anim::TimelineSample sample = anim::sampleTimeline(active.spec, active.elapsed);
-            if (sample.finished && !active.spec.fillForwards) {
-                active.done = true;
-                markDirty(); // restyle restores the un-animated values
-                continue;
-            }
-            if (!sample.active) continue; // waiting out the delay
+        const auto apply = [&](const Node::ActiveAnimation& active, float progress) {
             for (const anim::Track& track : active.tracks) {
                 anim::setAnimatable(&node->style, track.prop,
-                                    anim::sampleTrack(track, sample.progress,
-                                                      active.spec.timing));
+                                    anim::sampleTrack(track, progress, active.spec.timing));
                 if (anim::affectsLayout(track.prop)) {
                     layoutDirty = true;
                     yogaDirty = true;
                 }
             }
+        };
+        for (Node::ActiveAnimation& active : node->activeAnimations) {
+            if (active.done) {
+                // A finished forwards-fill keeps re-asserting its end pose
+                // (restyles rewrite node->style); the values are constant,
+                // so the paint cache stays valid.
+                if (active.spec.fillForwards) {
+                    const anim::TimelineSample sample =
+                        anim::sampleTimeline(active.spec, active.elapsed);
+                    if (sample.active) apply(active, sample.progress);
+                }
+                continue;
+            }
+            active.elapsed += dt;
+            const anim::TimelineSample sample =
+                anim::sampleTimeline(active.spec, active.elapsed);
+            if (sample.finished) {
+                active.done = true;
+                if (active.spec.fillForwards) {
+                    paintSnapshotValid = false;
+                    apply(active, sample.progress);
+                } else {
+                    markDirty(); // restyle restores the un-animated values
+                }
+                continue;
+            }
+            if (!sample.active) continue; // waiting out the delay: no damage
+            paintSnapshotValid = false;   // values move: repaint for real
+            apply(active, sample.progress);
         }
         if (yogaDirty) applyStyleToYoga(node->style, node->yoga);
         for (auto& child : node->children)
@@ -785,16 +815,38 @@ struct ContextImpl {
             canvas.drawText(node->placeholder, {textLeft, textTop}, faded);
         }
 
-        if (isFocused) {
-            // Blinking caret (visible 2/3 of a 0.9s cycle).
-            const double time = static_cast<double>(SDL_GetTicksNS()) * 1e-9;
-            if (std::fmod(time, 0.9) < 0.6) {
-                const float caretX = textLeft + prefixWidth(node, cursor);
-                canvas.drawRect({{caretX, textTop}, {1.5f, lineHeight}},
-                                {.color = s.textColor.fade(opacity)});
-            }
+        if (isFocused && blinkOn) { // blink phase is computed once per paint
+            const float caretX = textLeft + prefixWidth(node, cursor);
+            canvas.drawRect({{caretX, textTop}, {1.5f, lineHeight}},
+                            {.color = s.textColor.fade(opacity)});
         }
         canvas.popClip();
+    }
+
+    /// Paints the tree through the damage cache: record once, replay the
+    /// captured quads until something visual changes.
+    void paintTree(Canvas& canvas) {
+        // Caret blink (visible 2/3 of a 0.9s cycle) is time-driven damage.
+        const double time = static_cast<double>(SDL_GetTicksNS()) * 1e-9;
+        const bool blink = std::fmod(time, 0.9) < 0.6;
+        if (blink != blinkOn) {
+            blinkOn = blink;
+            if (focused != nullptr && focused->isInput()) paintSnapshotValid = false;
+        }
+
+        rendy::detail::CanvasData* data = canvas.data_;
+        // Replay/capture only in a clean clip context (the frame's viewport
+        // clip); under an app-pushed clip just paint directly.
+        const bool cachable = data->clipStack.size() == 1 && data->currentClip() == 0;
+        if (paintSnapshotValid && cachable) {
+            replaySnapshot(paintSnapshot, data);
+            return;
+        }
+        const size_t quadBase = data->quads.size();
+        const size_t clipBase = data->clips.size();
+        paintNode(root.get(), canvas, 1.0f);
+        paintSnapshotValid =
+            cachable && captureSnapshot(*data, quadBase, clipBase, &paintSnapshot);
     }
 
     // ---------------------------------------------------------- hot reload
@@ -1049,8 +1101,9 @@ void Context::paint(Canvas canvas) {
     if (impl_->root->rect.size != canvas.size()) {
         impl_->restyle();
         impl_->layout();
+        impl_->paintSnapshotValid = false;
     }
-    impl_->paintNode(impl_->root.get(), canvas, 1.0f);
+    impl_->paintTree(canvas);
 }
 
 } // namespace rendy::ui

@@ -20,6 +20,10 @@ struct CanvasData;
 struct AppImpl;
 } // namespace detail
 
+namespace ui::detail {
+struct ContextImpl;
+} // namespace ui::detail
+
 struct DrawRectOptions {
     Color color = colors::white;
     /// Uniform corner radius in px. For per-corner control set `cornerRadii`
@@ -77,6 +81,7 @@ public:
 
 private:
     friend struct detail::AppImpl;
+    friend struct ui::detail::ContextImpl; // damage-based paint caching
     explicit Canvas(detail::CanvasData* data) : data_(data) {}
     detail::CanvasData* data_;
 };

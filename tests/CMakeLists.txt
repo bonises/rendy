@@ -11,6 +11,7 @@ add_executable(rendy_tests
   css/test_cascade.cpp
   css/test_transitions.cpp
   css/test_animations.cpp
+  canvas/test_snapshot.cpp
   layout/test_layout.cpp
   layout/test_text_edit.cpp
   scene/test_animation.cpp

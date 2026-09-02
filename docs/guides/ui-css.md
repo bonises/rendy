@@ -112,6 +112,10 @@ Defaults differ from the browser where it helps UIs: every element is
 `display: flex; flex-direction: column; align-items: stretch`, so vertical
 stacking works with zero boilerplate.
 
+Painting is damage-based: on frames where nothing changed (no restyle, no
+running animation, no caret blink) the UI replays its recorded quads
+instead of re-walking the tree — an idle UI costs near-zero CPU.
+
 ## Text input
 
 `addChild("input", ...)` creates a single-line text field. Clicking focuses
