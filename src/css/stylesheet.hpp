@@ -61,6 +61,11 @@ struct Rule {
 struct Keyframe {
     float offset = 0.0f;
     std::vector<ui::Declaration> declarations;
+    /// `animation-timing-function` inside the block: eases the segment
+    /// *starting* at this keyframe (the value in `to`/100% is unused, per
+    /// CSS). Falls back to the animation's own timing when not set.
+    bool hasTiming = false;
+    ui::Timing timing = ui::Timing::Ease;
 };
 
 struct KeyframesRule {

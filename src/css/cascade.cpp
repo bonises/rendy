@@ -124,6 +124,13 @@ void applyDeclaration(const Declaration& d, ComputedStyle* s) {
     // clang-format on
     case Prop::Transition: s->transitions = d.value.transitions; break;
     case Prop::Animation: s->animations = d.value.animations; break;
+    case Prop::AnimationTiming:
+        // Longhand on an element: overrides the timing of every animation
+        // declared so far (inside @keyframes it never reaches the cascade —
+        // the parser lifts it into Keyframe::timing).
+        for (ui::AnimationSpec& animation : s->animations)
+            animation.timing = static_cast<ui::Timing>(d.value.keyword);
+        break;
     case Prop::FontSize:
         // em resolves against the *inherited* size (already in s->fontSize).
         if (d.value.length.unit == Unit::Em)

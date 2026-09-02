@@ -22,6 +22,18 @@ using ui::Value;
 
 namespace {
 
+// The CSS cubic-bezier presets, shared by transition/animation parsing.
+std::optional<ui::Timing> timingFromIdent(std::string_view ident) {
+    static constexpr std::pair<std::string_view, ui::Timing> kTimings[] = {
+        {"linear", ui::Timing::Linear},         {"ease", ui::Timing::Ease},
+        {"ease-in", ui::Timing::EaseIn},        {"ease-out", ui::Timing::EaseOut},
+        {"ease-in-out", ui::Timing::EaseInOut},
+    };
+    for (const auto& [keyword, timing] : kTimings)
+        if (ident == keyword) return timing;
+    return std::nullopt;
+}
+
 // ------------------------------------------------------------------ colors
 
 const std::unordered_map<std::string_view, uint32_t> kNamedColors{
@@ -194,6 +206,16 @@ private:
             }
             if (peek().is(TokenType::RBrace)) next();
             skipSpace();
+            // animation-timing-function is per-frame metadata, not an
+            // animated property — pull it out of the declaration list.
+            bool hasTiming = false;
+            ui::Timing timing = ui::Timing::Ease;
+            std::erase_if(scratch.declarations, [&](const Declaration& d) {
+                if (d.prop != Prop::AnimationTiming) return false;
+                hasTiming = true;
+                timing = static_cast<ui::Timing>(d.value.keyword);
+                return true;
+            });
             for (float offset : offsets) {
                 offset = std::clamp(offset, 0.0f, 1.0f);
                 Keyframe* frame = nullptr;
@@ -206,6 +228,10 @@ private:
                 frame->declarations.insert(frame->declarations.end(),
                                            scratch.declarations.begin(),
                                            scratch.declarations.end());
+                if (hasTiming) {
+                    frame->hasTiming = true;
+                    frame->timing = timing;
+                }
             }
         }
         if (peek().is(TokenType::RBrace)) next();
@@ -757,11 +783,6 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
             {"width", Prop::Width},
             {"height", Prop::Height},
         };
-        static constexpr std::pair<std::string_view, ui::Timing> kTimings[] = {
-            {"linear", ui::Timing::Linear},         {"ease", ui::Timing::Ease},
-            {"ease-in", ui::Timing::EaseIn},        {"ease-out", ui::Timing::EaseOut},
-            {"ease-in-out", ui::Timing::EaseInOut},
-        };
         auto seconds = [](const Token& t) -> std::optional<float> {
             if (!t.is(TokenType::Dimension)) return std::nullopt;
             if (t.unit == "s") return parseFloat(t.value);
@@ -790,12 +811,9 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
                 }
                 if (!v[i].is(TokenType::Ident)) return false;
                 bool matched = false;
-                for (const auto& [ident, timing] : kTimings) {
-                    if (v[i].value == ident) {
-                        spec.timing = timing;
-                        matched = true;
-                        break;
-                    }
+                if (auto timing = timingFromIdent(v[i].value)) {
+                    spec.timing = *timing;
+                    matched = true;
                 }
                 if (matched) continue;
                 for (const auto& [ident, prop] : kAnimatable) {
@@ -815,6 +833,16 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
         rule->declarations.push_back(std::move(d));
         return true;
     }
+    if (name == "animation-timing-function") {
+        // Inside a `@keyframes` block: the easing for the segment starting
+        // at that keyframe. On a regular rule: overrides the timing of
+        // every animation on the element.
+        if (v.size() != 1 || !v[0].is(TokenType::Ident)) return false;
+        auto timing = timingFromIdent(v[0].value);
+        if (!timing) return false;
+        emitKeyword(rule, Prop::AnimationTiming, static_cast<uint8_t>(*timing));
+        return true;
+    }
     if (name == "animation") {
         // animation: <name> <duration> [<timing>] [<delay>] [<count>|infinite]
         //            [<direction>] [forwards|none] {, ...}
@@ -825,11 +853,6 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
             rule->declarations.push_back(std::move(d));
             return true;
         }
-        static constexpr std::pair<std::string_view, ui::Timing> kTimings[] = {
-            {"linear", ui::Timing::Linear},         {"ease", ui::Timing::Ease},
-            {"ease-in", ui::Timing::EaseIn},        {"ease-out", ui::Timing::EaseOut},
-            {"ease-in-out", ui::Timing::EaseInOut},
-        };
         static constexpr std::pair<std::string_view, ui::AnimDirection> kDirections[] = {
             {"normal", ui::AnimDirection::Normal},
             {"reverse", ui::AnimDirection::Reverse},
@@ -882,12 +905,9 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
                 }
                 bool matched = false;
                 if (!haveTiming) {
-                    for (const auto& [keyword, timing] : kTimings) {
-                        if (ident == keyword) {
-                            spec.timing = timing;
-                            haveTiming = matched = true;
-                            break;
-                        }
+                    if (auto timing = timingFromIdent(ident)) {
+                        spec.timing = *timing;
+                        haveTiming = matched = true;
                     }
                 }
                 if (matched) continue;

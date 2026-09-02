@@ -95,12 +95,24 @@ run several at once, `none` clears. Offsets are percentages (`from`/`to` =
 0%/100%); missing endpoints fall back to the element's own style, and the
 same property set as transitions animates (others are ignored). `forwards`
 holds the final frame after the last iteration; without it the element
-snaps back. The timing function eases each keyframe segment, per CSS.
+snaps back. The timing function eases each keyframe segment, per CSS —
+and an `animation-timing-function` *inside* a keyframe block overrides it
+for the segment starting at that keyframe (the value in `to` is unused):
+
+```css
+@keyframes drop {
+  from { top: 0px; animation-timing-function: ease-in; }  /* accelerate…   */
+  50%  { top: 200px; }                                    /* …then default */
+}
+```
+
 Hot-reloading a `@keyframes` block retunes running animations in place.
 Typed API: `ui.addKeyframes("pulse", {{0.0f, Style{}.opacity(1)}, {0.5f,
 Style{}.opacity(0.25f)}})` + `Style{}.animation("pulse", 1.4f,
-Timing::EaseInOut, 0.0f, INFINITY)`. Per-keyframe timing functions are not
-supported.
+Timing::EaseInOut, 0.0f, INFINITY)`; per-keyframe easing is
+`Style{}.animationTiming(Timing::EaseIn)` on the keyframe's Style. On a
+regular element/rule, `animation-timing-function` (or `.animationTiming()`)
+overrides the timing of every animation declared before it.
 
 Unknown properties log one warning and are ignored — a stylesheet never
 fails to load because of them. Text inside elements word-wraps to the

@@ -169,8 +169,8 @@ TEST_CASE("tracks compile against the base style and interpolate", "[css][animat
     REQUIRE(tracks[0].prop == Prop::Opacity);
     // Implicit 0% and 100% from the base value.
     REQUIRE(tracks[0].keys.size() == 3);
-    REQUIRE(tracks[0].keys.front().second.x == Approx(1.0f));
-    REQUIRE(tracks[0].keys.back().second.x == Approx(1.0f));
+    REQUIRE(tracks[0].keys.front().value.x == Approx(1.0f));
+    REQUIRE(tracks[0].keys.back().value.x == Approx(1.0f));
 
     // Linear sampling: halfway into the first segment.
     const Vec4 mid = ui::anim::sampleTrack(tracks[0], 0.25f, Timing::Linear);
@@ -179,6 +179,56 @@ TEST_CASE("tracks compile against the base style and interpolate", "[css][animat
     REQUIRE(ui::anim::sampleTrack(tracks[0], 0.0f, Timing::Linear).x == Approx(1.0f));
     REQUIRE(ui::anim::sampleTrack(tracks[0], 0.5f, Timing::Linear).x == Approx(0.0f));
     REQUIRE(ui::anim::sampleTrack(tracks[0], 1.0f, Timing::Linear).x == Approx(1.0f));
+}
+
+TEST_CASE("per-keyframe timing functions parse and ease their own segment",
+          "[css][animation]") {
+    auto result = parse(R"(
+        @keyframes fade {
+            from { opacity: 1; animation-timing-function: ease-in; }
+            50%  { opacity: 0; }
+            to   { opacity: 1; }
+        }
+    )");
+    REQUIRE(result.hasValue());
+    const auto& frames = result.value().keyframes[0].frames;
+    REQUIRE(frames.size() == 3);
+    REQUIRE(frames[0].hasTiming);
+    REQUIRE(frames[0].timing == Timing::EaseIn);
+    REQUIRE_FALSE(frames[1].hasTiming);
+    // The timing declaration is metadata, not an animated property.
+    REQUIRE(frames[0].declarations.size() == 1);
+
+    ComputedStyle base;
+    base.opacity = 1.0f;
+    const auto tracks = ui::anim::compileTracks(frames, base);
+    REQUIRE(tracks.size() == 1);
+
+    // First segment (0 → 0.5) eases in: halfway through, ease-in is well
+    // below linear. Second segment falls back to the animation's timing
+    // (linear here) and interpolates exactly.
+    const float easedIn = 1.0f - ui::anim::sampleTrack(tracks[0], 0.25f, Timing::Linear).x;
+    REQUIRE(easedIn < 0.35f);
+    REQUIRE(ui::anim::sampleTrack(tracks[0], 0.75f, Timing::Linear).x == Approx(0.5f));
+}
+
+TEST_CASE("animation-timing-function on a rule overrides animation timings",
+          "[css][animation]") {
+    auto result = parse(R"(
+        x { animation: pulse 1s ease; animation-timing-function: linear; }
+    )");
+    REQUIRE(result.hasValue());
+    ComputedStyle style;
+    for (const auto& d : result.value().rules[0].declarations) applyDeclaration(d, &style);
+    REQUIRE(style.animations.size() == 1);
+    REQUIRE(style.animations[0].timing == Timing::Linear);
+
+    // Invalid values are rejected (unknown ident, multiple tokens).
+    for (const char* bad : {"bouncy", "ease linear"}) {
+        auto r = parse(fmt::format("x {{ animation-timing-function: {}; }}", bad));
+        REQUIRE(r.hasValue());
+        REQUIRE_FALSE(r.value().unsupported.empty());
+    }
 }
 
 TEST_CASE("track for an unanimatable base value is dropped", "[css][animation]") {

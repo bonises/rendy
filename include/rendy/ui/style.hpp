@@ -57,7 +57,7 @@ enum class Prop : uint8_t {
     BackgroundColor, TextColor, Opacity,
     ShadowOffsetX, ShadowOffsetY, ShadowBlur, ShadowColor,
     FontSize, FontFamily, TextAlignProp, LineHeight,
-    Transition, Animation,
+    Transition, Animation, AnimationTiming,
     Count,
     // clang-format on
 };
@@ -203,6 +203,12 @@ public:
         declarations_.push_back(std::move(d));
         return *this;
     }
+
+    /// Inside a keyframe Style (Context::addKeyframes): the easing for the
+    /// segment *starting* at that keyframe, like CSS
+    /// `animation-timing-function` in a `@keyframes` block. On a regular
+    /// element style it overrides the timing of every `animation()` entry.
+    Style& animationTiming(Timing v) { return keyword(Prop::AnimationTiming, static_cast<uint8_t>(v)); }
 
     [[nodiscard]] const std::vector<Declaration>& declarations() const { return declarations_; }
 

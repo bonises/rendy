@@ -44,7 +44,10 @@ plus `transition(Prop, seconds, Timing = Ease, delaySeconds = 0)` —
 repeatable; `Prop::Count` means "all animatable" (see the UI guide) — and
 `animation(name, seconds, Timing = Ease, delaySeconds = 0, iterations = 1,
 AnimDirection = Normal, fillForwards = false)` referencing `addKeyframes`
-or a CSS `@keyframes` (iterations may be `INFINITY`).
+or a CSS `@keyframes` (iterations may be `INFINITY`), and
+`animationTiming(Timing)` — in a keyframe's Style: the easing for the
+segment starting there; on an element style: overrides every animation's
+timing (CSS `animation-timing-function`).
 
 Enums: `Display{Flex,None}`, `FlexDirection{Row,Column,RowReverse,ColumnReverse}`,
 `FlexWrap{NoWrap,Wrap,WrapReverse}`, `Justify{FlexStart,FlexEnd,Center,

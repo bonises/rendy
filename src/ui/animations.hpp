@@ -59,9 +59,17 @@ inline TimelineSample sampleTimeline(const AnimationSpec& spec, float elapsed) {
 }
 
 /// One animatable property's keys across the keyframes, offsets sorted.
+/// Each key can carry its own easing (CSS `animation-timing-function`
+/// inside the keyframe block), applying to the segment that *starts* there.
 struct Track {
+    struct Key {
+        float offset = 0.0f;
+        Vec4 value{};
+        bool hasTiming = false;
+        Timing timing = Timing::Ease;
+    };
     Prop prop{};
-    std::vector<std::pair<float, Vec4>> keys;
+    std::vector<Key> keys;
 };
 
 /// Resolves each keyframe's declarations against `base` (the element's
@@ -90,42 +98,50 @@ inline std::vector<Track> compileTracks(const std::vector<css::Keyframe>& frames
                 tracks.push_back({declaration.prop, {}});
                 track = &tracks.back();
             }
-            if (!track->keys.empty() && track->keys.back().first == frame.offset)
-                track->keys.back().second = value; // same offset: later wins
-            else
-                track->keys.push_back({frame.offset, value});
+            if (!track->keys.empty() && track->keys.back().offset == frame.offset) {
+                track->keys.back().value = value; // same offset: later wins
+                if (frame.hasTiming) {
+                    track->keys.back().hasTiming = true;
+                    track->keys.back().timing = frame.timing;
+                }
+            } else {
+                track->keys.push_back({frame.offset, value, frame.hasTiming, frame.timing});
+            }
         }
     }
 
-    // Implicit endpoints from the base style (CSS's missing from/to rule).
+    // Implicit endpoints from the base style (CSS's missing from/to rule);
+    // an implicit `from` eases with the animation's own timing function.
     for (auto it = tracks.begin(); it != tracks.end();) {
         Vec4 baseValue{};
         if (!getAnimatable(base, it->prop, &baseValue)) {
             it = tracks.erase(it); // e.g. width animated but base is auto
             continue;
         }
-        if (it->keys.front().first > 0.0f)
-            it->keys.insert(it->keys.begin(), {0.0f, baseValue});
-        if (it->keys.back().first < 1.0f) it->keys.push_back({1.0f, baseValue});
+        if (it->keys.front().offset > 0.0f)
+            it->keys.insert(it->keys.begin(), {0.0f, baseValue, false, Timing::Ease});
+        if (it->keys.back().offset < 1.0f)
+            it->keys.push_back({1.0f, baseValue, false, Timing::Ease});
         ++it;
     }
     return tracks;
 }
 
-/// Value at `progress` ∈ [0,1]; the timing function eases each keyframe
-/// segment (CSS applies animation-timing-function between keyframes, not
-/// across the whole animation).
-inline Vec4 sampleTrack(const Track& track, float progress, Timing timing) {
+/// Value at `progress` ∈ [0,1]; each keyframe segment eases with the
+/// timing function of the keyframe it starts at (CSS's per-keyframe
+/// animation-timing-function), falling back to the animation's own timing.
+inline Vec4 sampleTrack(const Track& track, float progress, Timing fallback) {
     const auto& keys = track.keys;
-    if (progress <= keys.front().first) return keys.front().second;
-    if (progress >= keys.back().first) return keys.back().second;
+    if (progress <= keys.front().offset) return keys.front().value;
+    if (progress >= keys.back().offset) return keys.back().value;
     for (size_t i = 1; i < keys.size(); ++i) {
-        if (progress > keys[i].first) continue;
-        const float span = keys[i].first - keys[i - 1].first;
-        const float local = span > 0.0f ? (progress - keys[i - 1].first) / span : 1.0f;
-        return glm::mix(keys[i - 1].second, keys[i].second, ease(timing, local));
+        if (progress > keys[i].offset) continue;
+        const float span = keys[i].offset - keys[i - 1].offset;
+        const float local = span > 0.0f ? (progress - keys[i - 1].offset) / span : 1.0f;
+        const Timing timing = keys[i - 1].hasTiming ? keys[i - 1].timing : fallback;
+        return glm::mix(keys[i - 1].value, keys[i].value, ease(timing, local));
     }
-    return keys.back().second;
+    return keys.back().value;
 }
 
 } // namespace rendy::ui::anim

@@ -1077,8 +1077,18 @@ void Context::addKeyframes(std::string_view name,
                            std::vector<std::pair<float, Style>> frames) {
     std::vector<css::Keyframe> compiled;
     compiled.reserve(frames.size());
-    for (auto& [offset, style] : frames)
-        compiled.push_back({std::clamp(offset, 0.0f, 1.0f), style.declarations()});
+    for (auto& [offset, style] : frames) {
+        css::Keyframe frame{std::clamp(offset, 0.0f, 1.0f), style.declarations()};
+        // Style::animationTiming is per-frame metadata (segment easing),
+        // not an animated property — lift it out, like the CSS parser does.
+        std::erase_if(frame.declarations, [&](const Declaration& d) {
+            if (d.prop != Prop::AnimationTiming) return false;
+            frame.hasTiming = true;
+            frame.timing = static_cast<Timing>(d.value.keyword);
+            return true;
+        });
+        compiled.push_back(std::move(frame));
+    }
     std::stable_sort(compiled.begin(), compiled.end(),
                      [](const css::Keyframe& a, const css::Keyframe& b) {
                          return a.offset < b.offset;
