@@ -1,5 +1,7 @@
 # rendy
 
+[![CI](https://github.com/bonises/rendy/actions/workflows/ci.yml/badge.svg)](https://github.com/bonises/rendy/actions/workflows/ci.yml)
+
 A C++20 rendering library built on Vulkan 1.3 — fast 2D UI with real CSS
 (flexbox, hot reload), forward-rendered PBR 3D with lights and shadows, glTF
 model loading, text, and audio. For games, editors, and anything in between.
