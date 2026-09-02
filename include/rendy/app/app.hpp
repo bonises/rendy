@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace rendy {
 
@@ -38,6 +39,13 @@ struct AppConfig {
     bool resizable = true;
     bool vsync = true;
     bool validation = false; ///< force Vulkan validation (also RENDY_VULKAN_VALIDATION build opt)
+    bool hidden = false;     ///< create the window hidden (offscreen tests/tools)
+};
+
+/// A captured frame (see App::requestScreenshot).
+struct Screenshot {
+    IVec2 size{0, 0};
+    std::vector<uint8_t> rgba; ///< 8-bit sRGB RGBA, row-major, top-left origin
 };
 
 struct FrameConfig {
@@ -100,6 +108,13 @@ public:
     Result<FontRef> loadFont(const std::string& path);
     /// The system sans-serif found at startup (id 0).
     [[nodiscard]] FontRef defaultFont() const;
+
+    /// Capture the NEXT presented frame's pixels (that present blocks
+    /// briefly). Fetch the result with takeScreenshot() afterwards.
+    void requestScreenshot();
+    /// The frame captured after the latest requestScreenshot(), or an error
+    /// when no capture has completed. Consumes the capture.
+    Result<Screenshot> takeScreenshot();
 
     [[nodiscard]] const Input& input() const;
     /// Framebuffer size in pixels (drawing coordinate space).

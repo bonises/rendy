@@ -27,3 +27,14 @@ target_link_libraries(rendy_tests PRIVATE rendy::rendy Catch2::Catch2WithMain re
 
 include(Catch)
 catch_discover_tests(rendy_tests)
+
+# GPU smoke tests: need a Vulkan device + windowing (run locally, not CI).
+# ctest -L gpu, or the rendy_gpu_tests binary directly.
+option(RENDY_GPU_TESTS "Build GPU smoke tests (needs a Vulkan device)" OFF)
+if(RENDY_GPU_TESTS)
+  add_executable(rendy_gpu_tests gpu/test_gpu.cpp)
+  target_include_directories(rendy_gpu_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(rendy_gpu_tests PRIVATE rendy::rendy Catch2::Catch2WithMain
+                                                rendy::warnings)
+  catch_discover_tests(rendy_gpu_tests PROPERTIES LABELS gpu RUN_SERIAL ON)
+endif()

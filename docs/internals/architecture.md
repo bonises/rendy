@@ -223,6 +223,17 @@ happen in the feeder (ring resets under the SDL stream lock). While a
 rewind is pending the callback plays silence instead of the previous
 playback's buffered tail. One playing voice per stream.
 
+## GPU tests (`tests/gpu/`, opt-in)
+
+`-DRENDY_GPU_TESTS=ON` builds `rendy_gpu_tests`: real device, hidden
+window, per-frame screenshot readback (`App::requestScreenshot` — the
+swapchain carries TRANSFER_SRC and the captured frame copies into a
+host-visible buffer at present). Assertions are robust invariants (pixel
+colors, image mean-diffs), not golden hashes. Covered: 2D clear/rect/text
+readback, damage-cache replay byte-identity + invalidation, a lit 3D
+cube, and the reflection-probe A→B→A ownership regression (verified to
+fail when the ownership gate is removed). CPU-only CI never builds these.
+
 ## Conventions worth keeping
 
 - Errors: `Result<T>` at the public boundary, `VK_CHECK` (log + abort)

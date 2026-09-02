@@ -24,6 +24,11 @@ CI (`.github/workflows/ci.yml`) builds GCC + Clang × debug/release plus a
 GCC asan job, all with `RENDY_WERROR=ON` — keep the tree warning-clean
 under both compilers. Tests are CPU-only; CI has no GPU.
 
+GPU smoke tests (local only): configure with `-DRENDY_GPU_TESTS=ON`, run
+`ctest -L gpu` or `./build/debug/tests/rendy_gpu_tests`. Hidden window +
+screenshot readback (`App::requestScreenshot`); covers 2D/3D rendering,
+the UI damage cache and probe ownership. Run them after renderer changes.
+
 ## Where things live
 
 | Area | Public API | Implementation | Tests |

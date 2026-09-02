@@ -18,10 +18,12 @@ Headers: `rendy/app/{app,input}.hpp`
 | `input` | `const Input& input() const` | |
 | `pixelSize` | `IVec2 pixelSize() const` | framebuffer px |
 | `dt` / `time` / `fps` | `float` / `double` / `float` | dt clamped to 0.1 s |
+| `requestScreenshot` | `void requestScreenshot()` | captures the NEXT presented frame (that present blocks briefly) |
+| `takeScreenshot` | `Result<Screenshot> takeScreenshot()` | `{IVec2 size, vector<uint8_t> rgba}` — sRGB, top-left origin |
 
 `AppConfig`: `title` ("rendy"), `size` ({1280,720}), `resizable` (true),
-`vsync` (true; off = mailbox/immediate), `validation` (false).
-`FrameConfig`: `clear` color.
+`vsync` (true; off = mailbox/immediate), `validation` (false), `hidden`
+(false; offscreen tests/tools). `FrameConfig`: `clear` color.
 
 ## Frame
 

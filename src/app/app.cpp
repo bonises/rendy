@@ -95,6 +95,8 @@ AppImpl::~AppImpl() {
     // Tear down strictly in reverse creation order; everything owning GPU
     // resources must die before the allocator/device in `gpu`.
     if (gpu) gpu->waitIdle();
+    if (captureBuffer != VK_NULL_HANDLE)
+        vmaDestroyBuffer(gpu->allocator(), captureBuffer, captureAllocation);
     renderer3d.reset();
     renderer2d.reset();
     glyphs.reset();
@@ -303,14 +305,73 @@ void AppImpl::present() {
         renderer2d->flush(current.cmd, frames->slot(), canvasData, *frames);
         vkCmdEndRendering(current.cmd);
 
-        gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
-                          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                          VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                          VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                          VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        if (captureRequested) {
+            // Screenshot: copy the finished frame into a host-visible
+            // buffer on its way to present.
+            const VkExtent2D extent = swapchain->extent();
+            const size_t bytes = static_cast<size_t>(extent.width) * extent.height * 4;
+            if (bytes > captureBufferBytes) {
+                if (captureBuffer != VK_NULL_HANDLE)
+                    vmaDestroyBuffer(gpu->allocator(), captureBuffer, captureAllocation);
+                VkBufferCreateInfo bufferInfo{};
+                bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bufferInfo.size = bytes;
+                bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                VmaAllocationCreateInfo allocCreate{};
+                allocCreate.usage = VMA_MEMORY_USAGE_AUTO;
+                allocCreate.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                VmaAllocationInfo allocInfo{};
+                VK_CHECK(vmaCreateBuffer(gpu->allocator(), &bufferInfo, &allocCreate,
+                                         &captureBuffer, &captureAllocation, &allocInfo));
+                captureMapped = allocInfo.pMappedData;
+                captureBufferBytes = bytes;
+            }
+            gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
+                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+            VkBufferImageCopy copy{};
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageExtent = {extent.width, extent.height, 1};
+            vkCmdCopyImageToBuffer(current.cmd, swapchain->image(current.imageIndex),
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, captureBuffer, 1,
+                                   &copy);
+            gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
+                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                              VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                              VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        } else {
+            gpu::imageBarrier(current.cmd, swapchain->image(current.imageIndex),
+                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                              VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        }
     }
     frames->end();
+
+    if (captureRequested && current.ok) {
+        // Blocking read-out; screenshots are an explicitly slow path.
+        gpu->waitIdle();
+        vmaInvalidateAllocation(gpu->allocator(), captureAllocation, 0, VK_WHOLE_SIZE);
+        const VkExtent2D extent = swapchain->extent();
+        capture.size = {static_cast<int>(extent.width), static_cast<int>(extent.height)};
+        capture.rgba.resize(static_cast<size_t>(extent.width) * extent.height * 4);
+        const auto* src = static_cast<const uint8_t*>(captureMapped);
+        for (size_t i = 0; i < capture.rgba.size(); i += 4) { // BGRA → RGBA
+            capture.rgba[i + 0] = src[i + 2];
+            capture.rgba[i + 1] = src[i + 1];
+            capture.rgba[i + 2] = src[i + 0];
+            capture.rgba[i + 3] = src[i + 3];
+        }
+        captureRequested = false;
+        captureReady = true;
+    }
 }
 
 } // namespace detail
@@ -347,6 +408,7 @@ Result<App> App::create(const AppConfig& config) {
 
     SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (config.resizable) flags |= SDL_WINDOW_RESIZABLE;
+    if (config.hidden) flags |= SDL_WINDOW_HIDDEN;
     impl->window = SDL_CreateWindow(config.title.c_str(), config.size.x, config.size.y, flags);
     if (impl->window == nullptr)
         return err("SDL_CreateWindow failed: {}", SDL_GetError());
@@ -422,6 +484,15 @@ void App::destroyTexture(TextureRef texture) {
 }
 void App::quit() { impl_->quitRequested = true; }
 Frame App::beginFrame(const FrameConfig& config) { return impl_->beginFrame(config); }
+void App::requestScreenshot() { impl_->captureRequested = true; }
+
+Result<Screenshot> App::takeScreenshot() {
+    if (!impl_->captureReady)
+        return err("no screenshot captured — requestScreenshot() then present a frame");
+    impl_->captureReady = false;
+    return std::move(impl_->capture);
+}
+
 const Input& App::input() const { return impl_->input; }
 
 IVec2 App::pixelSize() const {

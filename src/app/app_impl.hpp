@@ -52,6 +52,16 @@ struct AppImpl {
     bool framePresented = true;
     gpu::FrameRing::FrameInfo current{};
 
+    // Screenshot capture (App::requestScreenshot): a host-visible buffer
+    // filled at present, swizzled BGRA→RGBA on read-out.
+    bool captureRequested = false;
+    bool captureReady = false;
+    Screenshot capture;
+    VkBuffer captureBuffer = VK_NULL_HANDLE;
+    VmaAllocation captureAllocation = VK_NULL_HANDLE;
+    void* captureMapped = nullptr;
+    size_t captureBufferBytes = 0;
+
     ~AppImpl();
 
     bool pollEvents();
