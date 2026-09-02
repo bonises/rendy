@@ -23,10 +23,15 @@ namespace rendy::text {
 
 class ShapeCache {
 public:
-    /// `capacity` is an entry count; at ~16 bytes per glyph a full cache
-    /// of 200-character lines stays in the low megabytes.
-    explicit ShapeCache(Shaper& shaper, size_t capacity = 2048)
-        : shaper_(shaper), capacity_(std::max<size_t>(capacity, 1)) {}
+    /// Evicts on whichever cap is hit first: entry count or approximate
+    /// bytes held (key text ×2 for the map copy + glyph storage). The byte
+    /// budget keeps document-sized lines — one minified-JS line can be
+    /// hundreds of KB — from pinning hundreds of MB; typical editor lines
+    /// never reach it.
+    explicit ShapeCache(Shaper& shaper, size_t capacity = 2048,
+                        size_t byteBudget = 8 << 20)
+        : shaper_(shaper), capacity_(std::max<size_t>(capacity, 1)),
+          byteBudget_(byteBudget) {}
 
     /// Shaped glyphs for one line (no '\n'), cached. The reference stays
     /// valid until the entry is evicted — use it right away.
@@ -45,7 +50,11 @@ public:
         entries_.push_front({{fontId, size, std::string(text)}, {}});
         shaper_.shape(fontId, pixelSize, text, &entries_.front().glyphs);
         map_.emplace(entries_.front().key, entries_.begin());
-        if (entries_.size() > capacity_) {
+        bytes_ += entryBytes(entries_.front());
+        // Never evict the entry just returned (its reference is live).
+        while (entries_.size() > 1 &&
+               (entries_.size() > capacity_ || bytes_ > byteBudget_)) {
+            bytes_ -= entryBytes(entries_.back());
             // (find + erase-by-iterator: heterogeneous erase is C++23)
             map_.erase(map_.find(KeyView{entries_.back().key.font, entries_.back().key.size,
                                          entries_.back().key.text}));
@@ -57,6 +66,7 @@ public:
     [[nodiscard]] size_t hits() const { return hits_; }
     [[nodiscard]] size_t misses() const { return misses_; }
     [[nodiscard]] size_t size() const { return entries_.size(); }
+    [[nodiscard]] size_t bytes() const { return bytes_; }
 
 private:
     struct Key {
@@ -94,8 +104,17 @@ private:
         std::vector<ShapedGlyph> glyphs;
     };
 
+    /// Approximate heap cost: key text lives twice (list entry + map key),
+    /// plus glyph storage and node/bucket overhead.
+    static size_t entryBytes(const Entry& entry) {
+        return entry.key.text.size() * 2 + entry.glyphs.capacity() * sizeof(ShapedGlyph) +
+               128;
+    }
+
     Shaper& shaper_;
     size_t capacity_;
+    size_t byteBudget_;
+    size_t bytes_ = 0;
     std::list<Entry> entries_; ///< front = most recently used
     std::unordered_map<Key, std::list<Entry>::iterator, Hash, Equal> map_;
     size_t hits_ = 0;

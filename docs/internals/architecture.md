@@ -71,9 +71,10 @@ per-frame-slot mapped SSBO and render as ONE
   come back visually ordered from HarfBuzz already; mirroring is
   HarfBuzz's job on RTL buffers). Positioning uses HarfBuzz advances
   exclusively, so measure and draw always agree. Shaping goes through an
-  LRU cache (`src/text/shape_cache.hpp`, keyed by font/size/text) so
-  editors that repaint whole viewports per keystroke only re-shape the
-  line that changed.
+  LRU cache (`src/text/shape_cache.hpp`, keyed by font/size/text, capped
+  by entry count AND a byte budget so document-sized lines can't pin
+  hundreds of MB) so editors that repaint whole viewports per keystroke
+  only re-shape the line that changed.
 - Text quads sample R8 glyph-atlas pages (`src/text/glyph_cache.*`:
   FreeType raster → stb_rect_pack into 1024² pages, uploaded on change),
   cached per (font, size, **glyph id**) — the shaper's output, not

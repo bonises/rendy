@@ -76,3 +76,34 @@ TEST_CASE("shape cache: least recently used entries evict", "[text][shaper]") {
     (void)cache.shape(id, 16.0f, "b");
     REQUIRE(cache.misses() == 4); // evicted: re-shaped
 }
+
+TEST_CASE("shape cache: byte budget evicts oversized content", "[text][shaper]") {
+    const char* fontPath = dejaVu();
+    if (fontPath == nullptr) {
+        SUCCEED("no system DejaVu font — skipping");
+        return;
+    }
+    Shaper shaper;
+    const uint32_t id = shaper.loadFont(fontPath).value();
+    // Generous entry cap, tiny byte budget: bytes drive eviction.
+    ShapeCache cache(shaper, 100, 4096);
+
+    const std::string big(600, 'x'); // ≈ 600*2 key + 600*16 glyph bytes
+    (void)cache.shape(id, 16.0f, big + "1");
+    (void)cache.shape(id, 16.0f, big + "2");
+    REQUIRE(cache.size() == 1); // the first entry had to go
+    REQUIRE(cache.bytes() <= 4096 + 12000); // ≈ one entry's worth
+
+    // A single entry over the whole budget still caches (and returns) —
+    // the live reference is never evicted underneath the caller.
+    const std::string huge(5000, 'y');
+    const auto& glyphs = cache.shape(id, 16.0f, huge);
+    REQUIRE(glyphs.size() == 5000);
+    REQUIRE(cache.size() == 1);
+
+    // Small lines are unaffected by the budget.
+    ShapeCache roomy(shaper, 100, 1 << 20);
+    for (int i = 0; i < 50; ++i)
+        (void)roomy.shape(id, 16.0f, "line " + std::to_string(i));
+    REQUIRE(roomy.size() == 50);
+}
