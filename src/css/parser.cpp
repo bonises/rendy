@@ -5,8 +5,10 @@
 
 #include <fmt/core.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 
@@ -75,6 +77,10 @@ public:
         Stylesheet sheet;
         skipSpace();
         while (!peek().is(TokenType::End)) {
+            if (peek().isDelim('@')) {
+                parseAtRule(&sheet);
+                continue;
+            }
             Rule rule;
             if (parseRule(&rule, &sheet))
                 sheet.rules.push_back(std::move(rule));
@@ -103,6 +109,110 @@ private:
             if (t.is(TokenType::LBrace)) depth++;
             if (t.is(TokenType::RBrace) && --depth <= 0) break;
         }
+    }
+
+    /// Skip an unknown at-rule: to `;` at top depth, or past a full block.
+    void skipAtRule() {
+        int depth = 0;
+        while (!peek().is(TokenType::End)) {
+            const Token& t = next();
+            if (t.is(TokenType::Semicolon) && depth == 0) break;
+            if (t.is(TokenType::LBrace)) depth++;
+            if (t.is(TokenType::RBrace) && --depth <= 0) break;
+        }
+        skipSpace();
+    }
+
+    void parseAtRule(Stylesheet* sheet) {
+        next(); // @
+        if (!peek().is(TokenType::Ident)) {
+            skipAtRule();
+            return;
+        }
+        const std::string keyword = next().value;
+        if (keyword == "keyframes") {
+            parseKeyframes(sheet);
+            return;
+        }
+        sheet->unsupported.push_back("@" + keyword);
+        skipAtRule();
+    }
+
+    /// @keyframes <name> { 0%, 50% { ... } from { ... } to { ... } }
+    void parseKeyframes(Stylesheet* sheet) {
+        skipSpace();
+        if (!peek().is(TokenType::Ident)) {
+            skipAtRule();
+            return;
+        }
+        KeyframesRule keyframes;
+        keyframes.name = next().value;
+        skipSpace();
+        if (!peek().is(TokenType::LBrace)) {
+            skipAtRule();
+            return;
+        }
+        next(); // {
+        skipSpace();
+        while (!peek().is(TokenType::RBrace) && !peek().is(TokenType::End)) {
+            // ---- offset list: percentages, `from` (0%) and `to` (100%)
+            std::vector<float> offsets;
+            bool ok = true;
+            while (true) {
+                skipSpace();
+                const Token& t = peek();
+                if (t.is(TokenType::Percentage)) {
+                    offsets.push_back(parseFloat(next().value) / 100.0f);
+                } else if (t.is(TokenType::Ident) && t.value == "from") {
+                    next();
+                    offsets.push_back(0.0f);
+                } else if (t.is(TokenType::Ident) && t.value == "to") {
+                    next();
+                    offsets.push_back(1.0f);
+                } else {
+                    ok = false;
+                    break;
+                }
+                skipSpace();
+                if (peek().is(TokenType::Comma)) {
+                    next();
+                    continue;
+                }
+                break;
+            }
+            if (!ok || offsets.empty() || !peek().is(TokenType::LBrace)) {
+                skipBlock(); // drop this malformed frame, keep the rest
+                skipSpace();
+                continue;
+            }
+            next(); // {
+            Rule scratch;
+            skipSpace();
+            while (!peek().is(TokenType::RBrace) && !peek().is(TokenType::End)) {
+                parseDeclaration(&scratch, sheet);
+                skipSpace();
+            }
+            if (peek().is(TokenType::RBrace)) next();
+            skipSpace();
+            for (float offset : offsets) {
+                offset = std::clamp(offset, 0.0f, 1.0f);
+                Keyframe* frame = nullptr;
+                for (Keyframe& existing : keyframes.frames)
+                    if (existing.offset == offset) frame = &existing;
+                if (frame == nullptr) {
+                    keyframes.frames.push_back({offset, {}});
+                    frame = &keyframes.frames.back();
+                }
+                frame->declarations.insert(frame->declarations.end(),
+                                           scratch.declarations.begin(),
+                                           scratch.declarations.end());
+            }
+        }
+        if (peek().is(TokenType::RBrace)) next();
+        skipSpace();
+        std::stable_sort(keyframes.frames.begin(), keyframes.frames.end(),
+                         [](const Keyframe& a, const Keyframe& b) { return a.offset < b.offset; });
+        if (!keyframes.frames.empty()) sheet->keyframes.push_back(std::move(keyframes));
     }
 
     bool parseRule(Rule* rule, Stylesheet* sheet) {
@@ -702,6 +812,112 @@ bool Parser::applyDeclaration(Rule* rule, const std::string& name,
             if (i < v.size()) ++i; // skip the comma
         }
         if (d.value.transitions.empty()) return false;
+        rule->declarations.push_back(std::move(d));
+        return true;
+    }
+    if (name == "animation") {
+        // animation: <name> <duration> [<timing>] [<delay>] [<count>|infinite]
+        //            [<direction>] [forwards|none] {, ...}
+        // Keywords are claimed before the name (like CSS), so an animation
+        // can't be named e.g. "reverse".
+        Declaration d{Prop::Animation, {}};
+        if (v.size() == 1 && v[0].is(TokenType::Ident) && v[0].value == "none") {
+            rule->declarations.push_back(std::move(d));
+            return true;
+        }
+        static constexpr std::pair<std::string_view, ui::Timing> kTimings[] = {
+            {"linear", ui::Timing::Linear},         {"ease", ui::Timing::Ease},
+            {"ease-in", ui::Timing::EaseIn},        {"ease-out", ui::Timing::EaseOut},
+            {"ease-in-out", ui::Timing::EaseInOut},
+        };
+        static constexpr std::pair<std::string_view, ui::AnimDirection> kDirections[] = {
+            {"normal", ui::AnimDirection::Normal},
+            {"reverse", ui::AnimDirection::Reverse},
+            {"alternate", ui::AnimDirection::Alternate},
+            {"alternate-reverse", ui::AnimDirection::AlternateReverse},
+        };
+        auto seconds = [](const Token& t) -> std::optional<float> {
+            if (!t.is(TokenType::Dimension)) return std::nullopt;
+            if (t.unit == "s") return parseFloat(t.value);
+            if (t.unit == "ms") return parseFloat(t.value) / 1000.0f;
+            return std::nullopt;
+        };
+        size_t i = 0;
+        while (i < v.size()) {
+            ui::AnimationSpec spec;
+            bool haveDuration = false;
+            bool haveDelay = false;
+            bool haveName = false;
+            bool haveTiming = false;
+            bool haveIterations = false;
+            bool haveDirection = false;
+            for (; i < v.size() && !v[i].is(TokenType::Comma); ++i) {
+                if (auto s = seconds(v[i])) {
+                    if (!haveDuration) {
+                        if (*s < 0.0f) return false; // negative duration is invalid
+                        spec.duration = *s;
+                        haveDuration = true;
+                    } else if (!haveDelay) {
+                        spec.delay = *s;
+                        haveDelay = true;
+                    } else {
+                        return false;
+                    }
+                    continue;
+                }
+                if (v[i].is(TokenType::Number)) {
+                    const float n = parseFloat(v[i].value);
+                    if (haveIterations || n < 0.0f) return false;
+                    spec.iterations = n;
+                    haveIterations = true;
+                    continue;
+                }
+                if (!v[i].is(TokenType::Ident)) return false;
+                const std::string& ident = v[i].value;
+                if (ident == "infinite") {
+                    if (haveIterations) return false;
+                    spec.iterations = std::numeric_limits<float>::infinity();
+                    haveIterations = true;
+                    continue;
+                }
+                bool matched = false;
+                if (!haveTiming) {
+                    for (const auto& [keyword, timing] : kTimings) {
+                        if (ident == keyword) {
+                            spec.timing = timing;
+                            haveTiming = matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (matched) continue;
+                if (!haveDirection) {
+                    for (const auto& [keyword, direction] : kDirections) {
+                        if (ident == keyword) {
+                            spec.direction = direction;
+                            haveDirection = matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (matched) continue;
+                if (ident == "forwards" || ident == "both") {
+                    spec.fillForwards = true;
+                    continue;
+                }
+                if (ident == "backwards") continue; // no backwards fill: ignored
+                if (!haveName) {
+                    spec.name = ident;
+                    haveName = true;
+                    continue;
+                }
+                return false; // second unclaimed ident
+            }
+            if (!haveName || !haveDuration) return false;
+            d.value.animations.push_back(std::move(spec));
+            if (i < v.size()) ++i; // skip the comma
+        }
+        if (d.value.animations.empty()) return false;
         rule->declarations.push_back(std::move(d));
         return true;
     }

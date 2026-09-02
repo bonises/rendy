@@ -11,6 +11,7 @@ for the full CSS property/selector tables.
 | `loadStylesheet` | `Result<void> loadStylesheet(path)` | hot-reloads in debug |
 | `addStylesheet` | `void addStylesheet(std::string_view css)` | no reload |
 | `registerFont` | `void registerFont(name, FontRef)` | for `font-family: name` |
+| `addKeyframes` | `void addKeyframes(name, {{offset 0..1, Style}, ...})` | typed `@keyframes`; wins over CSS with the same name |
 | `root` | `Element root()` | fills the window |
 | `update` | `void update()` | input, restyle, layout — once per frame |
 | `paint` | `void paint(Canvas)` | between beginFrame and present |
@@ -40,13 +41,17 @@ minWidth minHeight maxWidth maxHeight padding(1/2/4) margin(1/2/4) position
 left top right bottom overflow borderWidth borderColor borderRadius
 backgroundColor textColor opacity fontSize fontFamily textAlign lineHeight`,
 plus `transition(Prop, seconds, Timing = Ease, delaySeconds = 0)` —
-repeatable; `Prop::Count` means "all animatable" (see the UI guide).
+repeatable; `Prop::Count` means "all animatable" (see the UI guide) — and
+`animation(name, seconds, Timing = Ease, delaySeconds = 0, iterations = 1,
+AnimDirection = Normal, fillForwards = false)` referencing `addKeyframes`
+or a CSS `@keyframes` (iterations may be `INFINITY`).
 
 Enums: `Display{Flex,None}`, `FlexDirection{Row,Column,RowReverse,ColumnReverse}`,
 `FlexWrap{NoWrap,Wrap,WrapReverse}`, `Justify{FlexStart,FlexEnd,Center,
 SpaceBetween,SpaceAround,SpaceEvenly}`, `Align{Auto,FlexStart,FlexEnd,Center,
 Stretch,Baseline}`, `Position{Relative,Absolute}`, `Overflow{Visible,Hidden,
-Scroll}`, `TextAlign{Left,Center,Right}`.
+Scroll}`, `TextAlign{Left,Center,Right}`,
+`AnimDirection{Normal,Reverse,Alternate,AlternateReverse}`.
 
 `Length`: `Length::px(v)`, `Length::percent(v)`, `Length::em(v)`,
 `Length::autoValue()`.

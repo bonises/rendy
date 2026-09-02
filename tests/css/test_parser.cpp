@@ -95,8 +95,8 @@ TEST_CASE("colors in every supported form", "[css][parser]") {
 }
 
 TEST_CASE("unknown properties are collected, parse continues", "[css][parser]") {
-    auto sheet = parseOk("a { animation: spin 2s; width: 5px; }");
-    REQUIRE(sheet.unsupported == std::vector<std::string>{"animation"});
+    auto sheet = parseOk("a { cursor: pointer; width: 5px; }");
+    REQUIRE(sheet.unsupported == std::vector<std::string>{"cursor"});
     REQUIRE(find(sheet.rules[0], Prop::Width) != nullptr);
 }
 

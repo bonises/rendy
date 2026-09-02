@@ -85,6 +85,15 @@ walks the tree back-to-front and respects overflow clips; wheel scrolling
 targets the nearest scrollable ancestor. `.css` files are re-parsed on
 mtime change (debug builds).
 
+Animation runtime: each node's `style` is the *effective* style — the
+cascade writes the target, then per-frame `advanceTransitions` (property
+changes easing toward the new target, `src/ui/transitions.hpp`) and
+`advanceAnimations` (`@keyframes` timelines: per-property Vec4 tracks
+compiled against the un-animated base style, iterated/directed/filled per
+the CSS timeline rules, `src/ui/animations.hpp`) write over it — animations
+last, so they win. Both are GPU-free and unit-tested; layout-affecting
+props (px width/height, border-width) re-run Yoga each animated frame.
+
 ## 3D renderer (`src/scene/`)
 
 - **Data**: `SceneImpl` — flat node array (parents by index, world matrices

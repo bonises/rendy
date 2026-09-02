@@ -27,6 +27,9 @@ enum class Unit : uint8_t { None, Px, Percent, Em, Auto };
 /// Transition timing functions (the CSS cubic-bezier presets).
 enum class Timing : uint8_t { Linear, Ease, EaseIn, EaseOut, EaseInOut };
 
+/// CSS animation-direction.
+enum class AnimDirection : uint8_t { Normal, Reverse, Alternate, AlternateReverse };
+
 struct Length {
     float value = 0.0f;
     Unit unit = Unit::None; ///< None = unset/initial
@@ -54,7 +57,7 @@ enum class Prop : uint8_t {
     BackgroundColor, TextColor, Opacity,
     ShadowOffsetX, ShadowOffsetY, ShadowBlur, ShadowColor,
     FontSize, FontFamily, TextAlignProp, LineHeight,
-    Transition,
+    Transition, Animation,
     Count,
     // clang-format on
 };
@@ -68,14 +71,27 @@ struct TransitionSpec {
     Timing timing = Timing::Ease;
 };
 
+/// One entry of an `animation:` declaration, referencing a named
+/// `@keyframes` timeline. `iterations` may be INFINITY ("infinite").
+struct AnimationSpec {
+    std::string name;
+    float duration = 0.0f;  ///< seconds
+    float delay = 0.0f;     ///< seconds
+    Timing timing = Timing::Ease;
+    float iterations = 1.0f;
+    AnimDirection direction = AnimDirection::Normal;
+    bool fillForwards = false; ///< `forwards`/`both`: hold the final frame
+};
+
 /// A property value; which member is meaningful depends on the property.
 struct Value {
     Length length{};
     Color color{};
     float number = 0.0f;
     uint8_t keyword = 0;
-    std::string text;                       ///< font-family only
+    std::string text;                        ///< font-family only
     std::vector<TransitionSpec> transitions; ///< transition only
+    std::vector<AnimationSpec> animations;   ///< animation only
 };
 
 struct Declaration {
@@ -162,6 +178,28 @@ public:
         }
         Declaration d{Prop::Transition, {}};
         d.value.transitions.push_back({prop, seconds, delaySeconds, timing});
+        declarations_.push_back(std::move(d));
+        return *this;
+    }
+
+    /// Run the named keyframes timeline (registered with
+    /// Context::addKeyframes or defined in CSS `@keyframes`) on this
+    /// element, like CSS `animation: pulse 1.2s ease-in-out infinite`.
+    /// Call repeatedly for several simultaneous animations.
+    Style& animation(std::string name, float seconds, Timing timing = Timing::Ease,
+                     float delaySeconds = 0.0f, float iterations = 1.0f,
+                     AnimDirection direction = AnimDirection::Normal,
+                     bool fillForwards = false) {
+        AnimationSpec spec{std::move(name), seconds,   delaySeconds, timing,
+                           iterations,      direction, fillForwards};
+        for (Declaration& d : declarations_) {
+            if (d.prop == Prop::Animation) {
+                d.value.animations.push_back(std::move(spec));
+                return *this;
+            }
+        }
+        Declaration d{Prop::Animation, {}};
+        d.value.animations.push_back(std::move(spec));
         declarations_.push_back(std::move(d));
         return *this;
     }

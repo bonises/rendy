@@ -3,6 +3,7 @@
 #include "app/app_impl.hpp"
 #include "css/cascade.hpp"
 #include "css/parser.hpp"
+#include "ui/animations.hpp"
 #include "ui/text_edit.hpp"
 #include "ui/transitions.hpp"
 #include "ui/yoga_layout.hpp"
@@ -61,6 +62,15 @@ struct Node {
     std::vector<ActiveTransition> activeTransitions;
     bool everStyled = false; ///< first restyle never animates
 
+    // @keyframes animations running on this node.
+    struct ActiveAnimation {
+        AnimationSpec spec;
+        std::vector<anim::Track> tracks;
+        float elapsed = 0.0f;
+        bool done = false; ///< finished without fill: stopped, not restarted
+    };
+    std::vector<ActiveAnimation> activeAnimations;
+
     ~Node() {
         children.clear(); // children free their yoga nodes first
         if (yoga != nullptr) YGNodeFree(yoga);
@@ -83,6 +93,9 @@ struct ContextImpl {
     double lastWatchCheck = 0.0;
 
     std::unordered_map<std::string, FontRef> fonts;
+
+    // Typed-API keyframes (Context::addKeyframes); they win over CSS ones.
+    std::unordered_map<std::string, std::vector<css::Keyframe>> registeredKeyframes;
 
     Node* hovered = nullptr;
     Node* pressed = nullptr;
@@ -408,6 +421,7 @@ struct ContextImpl {
             startTransitions(node, old);
         else
             node->everStyled = true;
+        syncAnimations(node);
 
         applyStyleToYoga(node->style, node->yoga);
         syncMeasure(node);
@@ -499,6 +513,89 @@ struct ContextImpl {
         if (yogaDirty) applyStyleToYoga(node->style, node->yoga);
         for (auto& child : node->children)
             layoutDirty |= advanceTransitions(child.get(), dt);
+        return layoutDirty;
+    }
+
+    // ---------------------------------------------------------- animations
+
+    const std::vector<css::Keyframe>* findKeyframes(const std::string& name) const {
+        if (auto it = registeredKeyframes.find(name); it != registeredKeyframes.end())
+            return &it->second;
+        // Later stylesheets (and later rules within one) win, like the cascade.
+        for (auto sheet = sheets.rbegin(); sheet != sheets.rend(); ++sheet)
+            for (auto rule = sheet->keyframes.rbegin(); rule != sheet->keyframes.rend(); ++rule)
+                if (rule->name == name) return &rule->frames;
+        return nullptr;
+    }
+
+    /// Called after the cascade wrote node->style: starts animations that
+    /// appeared, drops ones that vanished, and recompiles keyframe tracks
+    /// against the new base style (running animations keep their clock).
+    void syncAnimations(Node* node) {
+        if (node->style.animations.empty() && node->activeAnimations.empty()) return;
+
+        std::erase_if(node->activeAnimations, [&](const Node::ActiveAnimation& active) {
+            for (const AnimationSpec& spec : node->style.animations)
+                if (spec.name == active.spec.name) return false;
+            return true;
+        });
+        for (const AnimationSpec& spec : node->style.animations) {
+            const std::vector<css::Keyframe>* frames = findKeyframes(spec.name);
+            Node::ActiveAnimation* existing = nullptr;
+            for (Node::ActiveAnimation& active : node->activeAnimations)
+                if (active.spec.name == spec.name) existing = &active;
+            if (frames == nullptr) {
+                // Unknown @keyframes name: inert (it may hot-reload in later).
+                if (existing != nullptr)
+                    std::erase_if(node->activeAnimations,
+                                  [&](const Node::ActiveAnimation& active) {
+                                      return active.spec.name == spec.name;
+                                  });
+                continue;
+            }
+            if (existing == nullptr) {
+                node->activeAnimations.push_back(
+                    {spec, anim::compileTracks(*frames, node->style), 0.0f, false});
+            } else {
+                existing->spec = spec;
+                existing->tracks = anim::compileTracks(*frames, node->style);
+                // Keep `done` in sync with the (possibly edited) timing so a
+                // finished flag never re-fires markDirty every restyle.
+                const anim::TimelineSample sample =
+                    anim::sampleTimeline(spec, existing->elapsed);
+                existing->done = sample.finished && !spec.fillForwards;
+            }
+        }
+    }
+
+    /// Advance all running animations by dt; returns true when a re-layout
+    /// is needed. Runs after advanceTransitions so animations win.
+    bool advanceAnimations(Node* node, float dt) {
+        bool layoutDirty = false;
+        bool yogaDirty = false;
+        for (Node::ActiveAnimation& active : node->activeAnimations) {
+            if (active.done) continue;
+            active.elapsed += dt;
+            const anim::TimelineSample sample = anim::sampleTimeline(active.spec, active.elapsed);
+            if (sample.finished && !active.spec.fillForwards) {
+                active.done = true;
+                markDirty(); // restyle restores the un-animated values
+                continue;
+            }
+            if (!sample.active) continue; // waiting out the delay
+            for (const anim::Track& track : active.tracks) {
+                anim::setAnimatable(&node->style, track.prop,
+                                    anim::sampleTrack(track, sample.progress,
+                                                      active.spec.timing));
+                if (anim::affectsLayout(track.prop)) {
+                    layoutDirty = true;
+                    yogaDirty = true;
+                }
+            }
+        }
+        if (yogaDirty) applyStyleToYoga(node->style, node->yoga);
+        for (auto& child : node->children)
+            layoutDirty |= advanceAnimations(child.get(), dt);
         return layoutDirty;
     }
 
@@ -928,7 +1025,23 @@ void Context::update() {
         impl_->layout();
         impl_->dirty = false;
     }
-    if (impl_->advanceTransitions(impl_->root.get(), impl_->app->dt)) impl_->layout();
+    bool needLayout = impl_->advanceTransitions(impl_->root.get(), impl_->app->dt);
+    needLayout |= impl_->advanceAnimations(impl_->root.get(), impl_->app->dt);
+    if (needLayout) impl_->layout();
+}
+
+void Context::addKeyframes(std::string_view name,
+                           std::vector<std::pair<float, Style>> frames) {
+    std::vector<css::Keyframe> compiled;
+    compiled.reserve(frames.size());
+    for (auto& [offset, style] : frames)
+        compiled.push_back({std::clamp(offset, 0.0f, 1.0f), style.declarations()});
+    std::stable_sort(compiled.begin(), compiled.end(),
+                     [](const css::Keyframe& a, const css::Keyframe& b) {
+                         return a.offset < b.offset;
+                     });
+    impl_->registeredKeyframes[std::string(name)] = std::move(compiled);
+    impl_->markDirty();
 }
 
 void Context::paint(Canvas canvas) {

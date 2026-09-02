@@ -77,12 +77,36 @@ Animatable: `background-color`, `color`, `border-color`, `border-width`,
 `Style{}.transition(Prop::BackgroundColor, 0.2f)` (repeatable;
 `Prop::Count` = all). Everything else snaps.
 
+**Animations**: `@keyframes` timelines that run on their own — loops,
+pulses, intros — no property change needed (transitions animate *changes*,
+animations animate *time*):
+
+```css
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+.live-dot { animation: pulse 1.4s ease-in-out infinite; }
+```
+
+`animation: <name> <duration> [<timing>] [<delay>] [<count>|infinite]
+[normal|reverse|alternate|alternate-reverse] [forwards|none]` — comma lists
+run several at once, `none` clears. Offsets are percentages (`from`/`to` =
+0%/100%); missing endpoints fall back to the element's own style, and the
+same property set as transitions animates (others are ignored). `forwards`
+holds the final frame after the last iteration; without it the element
+snaps back. The timing function eases each keyframe segment, per CSS.
+Hot-reloading a `@keyframes` block retunes running animations in place.
+Typed API: `ui.addKeyframes("pulse", {{0.0f, Style{}.opacity(1)}, {0.5f,
+Style{}.opacity(0.25f)}})` + `Style{}.animation("pulse", 1.4f,
+Timing::EaseInOut, 0.0f, INFINITY)`. Per-keyframe timing functions are not
+supported.
+
 Unknown properties log one warning and are ignored — a stylesheet never
 fails to load because of them. Text inside elements word-wraps to the
 element's width (centered/right-aligned text wraps left-aligned when it
 overflows). Scrollable elements show a draggable scrollbar thumb. Not in v1:
-media queries, `!important`, attribute/sibling selectors, keyframe
-animations.
+media queries, `!important`, attribute/sibling selectors.
 
 Defaults differ from the browser where it helps UIs: every element is
 `display: flex; flex-direction: column; align-items: stretch`, so vertical

@@ -25,6 +25,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace rendy::ui {
 
@@ -101,6 +103,12 @@ public:
 
     /// Make a loaded font available to CSS `font-family: name`.
     void registerFont(const std::string& name, FontRef font);
+
+    /// Typed-API equivalent of CSS `@keyframes name { ... }`: each pair is
+    /// (offset 0..1, keyframe style). Elements reference it with
+    /// `Style{}.animation("name", ...)` or CSS `animation: name ...`; typed
+    /// keyframes win over CSS ones with the same name.
+    void addKeyframes(std::string_view name, std::vector<std::pair<float, Style>> frames);
 
     [[nodiscard]] Element root();
 

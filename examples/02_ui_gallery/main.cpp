@@ -62,6 +62,9 @@ int main(int, char** argv) {
     auto list = main.addChild("div", {.classes = "card"});
     auto status = main.addChild("div", {.classes = "statusbar"});
     auto fpsLabel = status.addChild("div", {.text = "fps"});
+    auto liveGroup = status.addChild("div", {.classes = "live-group"});
+    liveGroup.addChild("div", {.classes = "live-dot"}); // @keyframes-animerad
+    liveGroup.addChild("div", {.text = "live"});
     status.addChild("div", {.text = "redigera gallery.css för hot reload"});
 
     auto clickCount = std::make_shared<int>(0);

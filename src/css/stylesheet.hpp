@@ -55,8 +55,22 @@ struct Rule {
     std::vector<ui::Declaration> declarations;
 };
 
+/// One `@keyframes` step: `0%, 50% { ... }` becomes one Keyframe per offset
+/// (offsets are fractions, `from`/`to` = 0/1). Frames with equal offsets are
+/// merged during parsing (later declarations win).
+struct Keyframe {
+    float offset = 0.0f;
+    std::vector<ui::Declaration> declarations;
+};
+
+struct KeyframesRule {
+    std::string name;
+    std::vector<Keyframe> frames; ///< sorted by offset
+};
+
 struct Stylesheet {
     std::vector<Rule> rules;
+    std::vector<KeyframesRule> keyframes;
     /// Property names that parsed but aren't supported (for warnings).
     std::vector<std::string> unsupported;
 };

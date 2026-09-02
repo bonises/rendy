@@ -137,3 +137,26 @@ input {
   transition: border-color 0.15s;
 }
 input:focus { border-color: #89b4fa; }
+
+/* @keyframes-animationer: pulserande statusprick + studsande laddindikator. */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@keyframes breathe {
+  from { background-color: #a6e3a1; }
+  50%  { background-color: #f9e2af; }
+  to   { background-color: #a6e3a1; }
+}
+.live-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background-color: #a6e3a1;
+  animation: pulse 1.4s ease-in-out infinite, breathe 4s linear infinite;
+}
+.live-group {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}

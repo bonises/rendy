@@ -43,8 +43,9 @@ struct ComputedStyle {
     float shadowBlur = 0.0f; ///< 0 = no shadow
     Color shadowColor{0.0f, 0.0f, 0.0f, 0.35f};
 
-    // Transitions (not inherited).
+    // Transitions and animations (not inherited).
     std::vector<ui::TransitionSpec> transitions;
+    std::vector<ui::AnimationSpec> animations;
 
     // Inherited text properties.
     Color textColor = colors::white;

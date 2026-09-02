@@ -10,6 +10,7 @@
 #include <rendy/rendy.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
     while (app.pollEvents()) {
         const Input& input = app.input();
         if (input.keyPressed(Key::Escape)) app.quit();
+        if (std::getenv("RENDY_AUTOQUIT") != nullptr && app.time() > 2.0) app.quit();
 
         // ---- editing ---------------------------------------------------
         if (!input.text().empty() && !input.ctrl()) {
